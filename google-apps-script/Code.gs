@@ -1376,6 +1376,12 @@ function updateCreatorProfile(creatorId, updateData, sessionUser) {
 
   clean.updatedAt = getNowIso();
   updateRowByField('Creators', 'creatorId', creatorId, clean);
+  if (clean.profileImageUrl !== undefined && creator.userId) {
+    updateRowByField('Users', 'userId', creator.userId, {
+      profileImage: clean.profileImageUrl,
+      updatedAt: getNowIso()
+    });
+  }
   var updated = findRowByField('Creators', 'creatorId', creatorId);
   return sanitizePublicCreator(updated);
 }
@@ -2196,11 +2202,14 @@ function getConversations(sessionUser) {
       convMap[cId] = {
         conversationId: cId,
         otherUserId: otherId,
-        otherUserName: otherUser ? otherUser.fullName : 'User',
+        otherUserName: m.guestName || (otherUser ? otherUser.fullName : 'Guest Client'),
         otherUserImage: otherUser ? otherUser.profileImage : '',
         lastMessage: m.message,
         lastMessageAt: m.createdAt,
-        unreadCount: (m.receiverId === sessionUser.userId && !m.isRead) ? 1 : 0
+        unreadCount: (m.receiverId === sessionUser.userId && !m.isRead) ? 1 : 0,
+        isGuest: Boolean(m.isGuest || cId.indexOf('GUEST-CONV-') === 0),
+        guestEmail: m.guestEmail || '',
+        guestPhone: m.guestPhone || ''
       };
     } else if (m.receiverId === sessionUser.userId && !m.isRead) {
       convMap[cId].unreadCount += 1;
@@ -2243,14 +2252,16 @@ function sendMessage(data, sessionUser) {
   if (!sessionUser) throw new Error('UNAUTHORIZED');
   if (!data.receiverId || !data.message) throw new Error('MISSING_FIELDS');
 
-  // Validate legitimate relationship
-  var allowed = canUsersMessage(sessionUser.userId, data.receiverId, sessionUser);
+  var cId = data.conversationId || ('CONV-' + [sessionUser.userId, data.receiverId].sort().join('-'));
+  var isGuestConv = (cId.indexOf('GUEST-CONV-') === 0);
+
+  // Validate legitimate relationship (allow creator replying to guest inquiry)
+  var allowed = isGuestConv || canUsersMessage(sessionUser.userId, data.receiverId, sessionUser);
   if (!allowed) {
     throw new Error('FORBIDDEN_MESSAGE: You do not have an active booking, project, or creator inquiry with this user');
   }
 
   var messageId = generateNextId('MSG', 'Messages', 'messageId');
-  var cId = data.conversationId || ('CONV-' + [sessionUser.userId, data.receiverId].sort().join('-'));
   var now = getNowIso();
 
   var newMsg = {
@@ -2269,14 +2280,82 @@ function sendMessage(data, sessionUser) {
 
   insertRow('Messages', newMsg);
 
-  createNotification(
-    data.receiverId,
-    'New message from ' + (sessionUser.fullName || 'User'),
-    newMsg.message.length > 50 ? newMsg.message.substring(0, 47) + '...' : newMsg.message,
-    'message'
-  );
+  if (!isGuestConv) {
+    createNotification(
+      data.receiverId,
+      'New message from ' + (sessionUser.fullName || 'User'),
+      newMsg.message.length > 50 ? newMsg.message.substring(0, 47) + '...' : newMsg.message,
+      'message'
+    );
+  }
 
   return stripInternalRow(newMsg);
+}
+
+function sendGuestInquiry(data) {
+  if (!data.creatorId || !data.guestName || !data.guestEmail || !data.message) {
+    throw new Error('MISSING_FIELDS: creatorId, guestName, guestEmail, and message are required');
+  }
+
+  var creator = findRowByField('Creators', 'creatorId', data.creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  var convId = data.conversationId || ('GUEST-CONV-' + data.creatorId.replace(/[^a-zA-Z0-9]/g, '') + '-' + new Date().getTime());
+  var guestToken = data.guestAccessToken || Utilities.getUuid();
+  var now = getNowIso();
+
+  var messageRecord = withScriptLock(function() {
+    var msgId = generateNextIdUnlocked('MSG', 'Messages', 'messageId');
+    var msg = {
+      messageId: msgId,
+      conversationId: convId,
+      senderId: 'guest_' + convId,
+      receiverId: creator.userId,
+      bookingId: '',
+      projectId: '',
+      message: String(data.message).trim(),
+      attachmentFileId: '',
+      attachmentUrl: '',
+      isRead: false,
+      createdAt: now,
+      isGuest: true,
+      guestName: String(data.guestName).trim(),
+      guestEmail: String(data.guestEmail).trim().toLowerCase(),
+      guestPhone: String(data.guestPhone || '').trim()
+    };
+    insertRowUnlocked('Messages', msg);
+    return msg;
+  });
+
+  if (creator.userId) {
+    createNotification(
+      creator.userId,
+      'Guest Inquiry: ' + data.guestName,
+      '"' + data.message.substring(0, 80) + '..." (Reply via Studio Messages)',
+      'message'
+    );
+  }
+
+  return {
+    conversationId: convId,
+    guestAccessToken: guestToken,
+    message: stripInternalRow(messageRecord)
+  };
+}
+
+function getGuestMessages(conversationId, guestAccessToken) {
+  if (!conversationId) return [];
+  var all = sheetToObjects('Messages');
+  var results = [];
+  for (var i = 0; i < all.length; i++) {
+    var m = all[i];
+    if (m.conversationId === conversationId) {
+      results.push(stripInternalRow(m));
+    }
+  }
+  return results.sort(function(a, b) {
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
 }
 
 function markMessageRead(messageId, sessionUser) {
@@ -2678,6 +2757,34 @@ function adminVerifyCreator(creatorId, verified, sessionUser) {
   return sanitizePublicCreator(updated);
 }
 
+function adminSetFeaturedCreator(creatorId, featured, sessionUser) {
+  requireAdminOrStaff(sessionUser);
+  var c = findRowByField('Creators', 'creatorId', creatorId);
+  if (!c) throw new Error('NOT_FOUND: Creator does not exist');
+
+  var isFeatured = featured === true;
+  var now = getNowIso();
+
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    featured: isFeatured,
+    updatedAt: now,
+    featuredBy: isFeatured ? sessionUser.userId : '',
+    featuredAt: isFeatured ? now : ''
+  });
+
+  if (isFeatured) {
+    createNotification(
+      c.userId,
+      'You’re Featured!',
+      'Your profile has been selected by SpotlightPhotography to appear in Featured Freelancers.',
+      'system'
+    );
+  }
+
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
 function adminSuspendCreator(creatorId, suspend, sessionUser) {
   requireAdminOrStaff(sessionUser);
   var c = findRowByField('Creators', 'creatorId', creatorId);
@@ -2801,6 +2908,10 @@ function doGet(e) {
       return createSuccessResponse(getCreatorReviews(params.creatorId));
     }
 
+    if (action === 'getGuestMessages') {
+      return createSuccessResponse(getGuestMessages(params.conversationId, params.guestAccessToken));
+    }
+
     // Authenticated GET actions (also supported via POST body for token privacy)
     var sessionUser = validateSession(token);
 
@@ -2885,6 +2996,15 @@ function doPost(e) {
 
     if (action === 'logout') {
       return createSuccessResponse(logout(token), 'Logged out');
+    }
+
+    // Public Guest Inquiries (Does NOT require user account or session token)
+    if (action === 'sendGuestInquiry') {
+      return createSuccessResponse(sendGuestInquiry(data), 'Inquiry sent');
+    }
+
+    if (action === 'getGuestMessages') {
+      return createSuccessResponse(getGuestMessages(data.conversationId, data.guestAccessToken));
     }
 
     // Authenticated endpoints require valid session
@@ -2985,6 +3105,7 @@ function doPost(e) {
     if (action === 'adminGetReports') return createSuccessResponse(adminGetReports(sessionUser));
     if (action === 'adminGetStorageUsage') return createSuccessResponse(adminGetStorageUsage(sessionUser));
     if (action === 'adminVerifyCreator') return createSuccessResponse(adminVerifyCreator(data.creatorId, data.verified, sessionUser));
+    if (action === 'adminSetFeaturedCreator') return createSuccessResponse(adminSetFeaturedCreator(data.creatorId, data.featured, sessionUser));
     if (action === 'adminSuspendCreator') return createSuccessResponse(adminSuspendCreator(data.creatorId, data.suspend, sessionUser));
 
     return createErrorResponse('UNKNOWN_ACTION', 'Action not recognized');

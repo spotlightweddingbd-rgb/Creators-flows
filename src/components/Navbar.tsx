@@ -26,6 +26,8 @@ import { SafeAvatar } from '../utils/imageUtils';
 interface NavbarProps {
   session: AuthSession | null;
   notifications: NotificationItem[];
+  savedCount?: number;
+  onOpenSaved?: () => void;
   onOpenAuth: (initialMode?: 'login' | 'registerCustomer' | 'registerCreator') => void;
   onOpenDashboard: (tab?: string) => void;
   onSelectCreator: (username: string) => void;
@@ -41,6 +43,8 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   session,
   notifications,
+  savedCount = 0,
+  onOpenSaved,
   onOpenAuth,
   onOpenDashboard,
   onSelectCreator,
@@ -66,13 +70,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-neutral-800/80 bg-neutral-950/90 backdrop-blur-md">
+    <header className="sticky top-0 z-40 w-full border-b border-white/[0.08] bg-[#0B0D12]/95 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         {/* Brand / Logo */}
         <div className="flex items-center gap-6">
           <button
             onClick={onGoHome}
-            className="flex items-center gap-2.5 text-left group focus:outline-none"
+            className="flex items-center gap-2.5 text-left group focus:outline-none cursor-pointer"
           >
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-rose-500 via-amber-500 to-rose-600 flex items-center justify-center shadow-lg shadow-rose-500/20 group-hover:scale-105 transition-transform">
               <Camera className="w-5 h-5 text-white" />
@@ -81,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="font-extrabold text-lg tracking-tight text-white flex items-center gap-1.5 font-['Space_Grotesk']">
                 CreatorFlow
               </span>
-              <p className="text-[10px] text-neutral-400 font-medium hidden sm:block">
+              <p className="text-[10px] text-white/60 font-medium hidden sm:block">
                 Creative Talent Marketplace
               </p>
             </div>
@@ -89,68 +93,95 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Center / Navigation Links */}
-        <nav className="hidden md:flex items-center gap-1 text-sm font-medium text-neutral-300">
+        <nav className="hidden md:flex items-center gap-1 text-xs font-semibold text-white/70">
           <button
             onClick={onNavigateExplore || onGoHome}
-            className="px-3.5 py-1.5 rounded-lg hover:text-white hover:bg-neutral-800/60 transition-colors"
+            className="px-3.5 py-2 rounded-xl hover:text-white hover:bg-[#171A22] transition-colors cursor-pointer"
           >
-            Explore Creators
+            Explore Freelancers
           </button>
           <button
             onClick={onNavigateHowItWorks || onGoHome}
-            className="px-3.5 py-1.5 rounded-lg hover:text-white hover:bg-neutral-800/60 transition-colors"
+            className="px-3.5 py-2 rounded-xl hover:text-white hover:bg-[#171A22] transition-colors cursor-pointer"
           >
             How It Works
           </button>
         </nav>
 
         {/* Right Actions */}
-        <div className="flex items-center gap-2.5">
-          {/* Notifications Dropdown (Only when logged in) */}
+        <div className="flex items-center gap-2 sm:gap-2.5">
           {session && (
-            <div className="relative">
-              <button
-                onClick={() => setShowNotifMenu(!showNotifMenu)}
-                className="relative p-2 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800/80 transition-colors"
-                aria-label="Notifications"
-              >
-                <Bell className="w-5 h-5" />
-                {unreadCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full ring-2 ring-neutral-950" />
-                )}
-              </button>
+            <>
+              {/* Notifications Dropdown */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowNotifMenu(!showNotifMenu)}
+                  className="relative p-2 rounded-xl text-neutral-400 hover:text-white hover:bg-[#171A22] border border-transparent hover:border-white/[0.08] transition-colors cursor-pointer"
+                  aria-label="Notifications"
+                >
+                  <Bell className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full ring-2 ring-[#0B0D12]" />
+                  )}
+                </button>
 
-              {showNotifMenu && (
-                <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-xl bg-neutral-900 border border-neutral-800 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2">
-                  <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
-                    <span className="font-semibold text-sm text-white">Notifications</span>
-                    <span className="text-xs text-neutral-400">Activity &amp; Updates</span>
-                  </div>
-                  <div className="max-h-72 overflow-y-auto divide-y divide-neutral-800/60 mt-1">
-                    {notifications.length === 0 ? (
-                      <p className="text-xs text-neutral-500 text-center py-6">
-                        No new notifications
-                      </p>
-                    ) : (
-                      notifications.map((n) => (
-                        <div key={n.notificationId} className="py-2.5 px-2 hover:bg-neutral-800/40 rounded-lg">
-                          <div className="flex items-start gap-2.5">
-                            <div className="w-2 h-2 rounded-full bg-rose-500 mt-1.5 shrink-0" />
-                            <div>
-                              <p className="text-xs font-medium text-white">{n.title}</p>
-                              <p className="text-xs text-neutral-400 mt-0.5">{n.message}</p>
-                              <span className="text-[10px] text-neutral-500 mt-1 block">
-                                {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
+                {showNotifMenu && (
+                  <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-2xl bg-[#171A22] border border-white/[0.08] shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
+                      <span className="font-semibold text-xs text-white">Notifications</span>
+                      <span className="text-[10px] text-white/50">Activity &amp; Updates</span>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto divide-y divide-white/[0.05] mt-1">
+                      {notifications.length === 0 ? (
+                        <p className="text-xs text-white/40 text-center py-6">
+                          No new notifications
+                        </p>
+                      ) : (
+                        notifications.map((n) => (
+                          <div key={n.notificationId} className="py-2.5 px-2 hover:bg-white/[0.03] rounded-lg">
+                            <div className="flex items-start gap-2.5">
+                              <div className="w-2 h-2 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                              <div>
+                                <p className="text-xs font-medium text-white">{n.title}</p>
+                                <p className="text-xs text-white/60 mt-0.5">{n.message}</p>
+                                <span className="text-[10px] text-white/40 mt-1 block">
+                                  {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))
-                    )}
+                        ))
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+
+              {/* Messages Shortcut */}
+              <button
+                onClick={() => onOpenDashboard('messages')}
+                className="p-2 rounded-xl text-neutral-400 hover:text-white hover:bg-[#171A22] border border-transparent hover:border-white/[0.08] transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Messages"
+              >
+                <MessageSquare className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <span className="text-xs font-medium hidden lg:inline">Messages</span>
+              </button>
+
+              {/* Saved Shortcut */}
+              <button
+                onClick={onOpenSaved || (() => onOpenDashboard('saved'))}
+                className="p-2 rounded-xl text-neutral-400 hover:text-white hover:bg-[#171A22] border border-transparent hover:border-white/[0.08] transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Saved Freelancers"
+              >
+                <Bookmark className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-rose-400" />
+                <span className="text-xs font-medium hidden lg:inline">Saved</span>
+                {savedCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/30">
+                    {savedCount}
+                  </span>
+                )}
+              </button>
+            </>
           )}
 
           {/* User Account / Auth Actions */}
@@ -158,7 +189,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="relative">
               <button
                 onClick={() => setShowUserMenu(!showUserMenu)}
-                className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-neutral-800 transition-colors border border-transparent hover:border-neutral-700"
+                className="flex items-center gap-2 p-1 rounded-xl hover:bg-[#171A22] transition-colors border border-transparent hover:border-white/[0.08] cursor-pointer"
               >
                 <SafeAvatar
                   src={session.creator?.profileImageUrl || session.user.profileImage}
@@ -349,7 +380,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={() => (onNavigateLogin ? onNavigateLogin() : onOpenAuth('login'))}
-                className="px-3 py-1.5 text-xs font-semibold text-neutral-300 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-colors"
+                className="px-3.5 py-1.5 text-xs font-semibold text-white/80 hover:text-white hover:bg-[#171A22] rounded-xl transition-colors cursor-pointer"
               >
                 Login
               </button>
@@ -358,7 +389,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() =>
                   onNavigateRegister ? onNavigateRegister('customer') : onOpenAuth('registerCustomer')
                 }
-                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-neutral-800 hover:bg-neutral-700 rounded-xl border border-neutral-700 transition-colors hidden sm:inline-block"
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#171A22] hover:bg-[#1E222D] rounded-xl border border-white/[0.08] hover:border-white/[0.16] transition-colors hidden sm:inline-block cursor-pointer"
               >
                 Create Account
               </button>
@@ -367,10 +398,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() =>
                   onNavigateRegister ? onNavigateRegister('creator') : onOpenAuth('registerCreator')
                 }
-                className="px-3.5 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500 hover:from-rose-600 hover:to-amber-600 rounded-xl shadow-md shadow-rose-500/20 transition-all flex items-center gap-1.5"
+                className="px-4 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500 hover:from-rose-600 hover:to-amber-600 rounded-xl shadow-md shadow-rose-500/20 transition-all flex items-center gap-1.5 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Become a Creator</span>
+                <span>Join as Freelancer</span>
               </button>
             </div>
           )}

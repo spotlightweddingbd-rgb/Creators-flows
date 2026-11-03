@@ -42,6 +42,10 @@ import {
   Linkedin,
   Lock,
   Search,
+  Crown,
+  AlertTriangle,
+  CheckCircle2,
+  X,
 } from 'lucide-react';
 import {
   AuthSession,
@@ -73,6 +77,7 @@ import {
   submitReview,
   adminGetDashboard,
   adminVerifyCreator,
+  adminSetFeaturedCreator,
   getCreators,
   uploadBase64File,
   updateCreatorProfile,
@@ -173,16 +178,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsSuccessToast, setSettingsSuccessToast] = useState(false);
+  const [profileCopiedToast, setProfileCopiedToast] = useState(false);
 
   const isCreator = session.user.accountType === 'creator' || Boolean(session.creator);
-  const isAdmin = session.user.accountType === 'admin';
+  const isAdmin =
+    session.user.accountType === 'admin' ||
+    session.user.accountType === 'staff' ||
+    (session.user as any)?.role === 'admin' ||
+    (session.user as any)?.role === 'staff';
+
+  // Mother Admin CreatorFlow Management State
+  const [adminCreatorSearch, setAdminCreatorSearch] = useState('');
+  const [adminCreatorFilter, setAdminCreatorFilter] = useState<'all' | 'featured' | 'verified' | 'pending' | 'suspended'>('all');
+  const [featuredConfirmModal, setFeaturedConfirmModal] = useState<{
+    isOpen: boolean;
+    creator: Creator | null;
+    targetFeatured: boolean;
+  }>({ isOpen: false, creator: null, targetFeatured: false });
+  const [autoVerifyOnFeature, setAutoVerifyOnFeature] = useState(false);
+  const [isUpdatingFeatured, setIsUpdatingFeatured] = useState(false);
+  const [adminDetailCreator, setAdminDetailCreator] = useState<Creator | null>(null);
+  const [adminToast, setAdminToast] = useState<string | null>(null);
+
+  const handleCopyProfileLink = () => {
+    const username = session.creator?.username || (session.user as any)?.username;
+    if (!username) return;
+    const url = `${window.location.origin}/creator/${username}`;
+    navigator.clipboard.writeText(url);
+    setProfileCopiedToast(true);
+    setTimeout(() => setProfileCopiedToast(false), 3000);
+  };
 
   // Sync tab when prop changes
   useEffect(() => {
     if (initialTab) {
-      setActiveTab(normalizeTab(initialTab));
+      const normalized = normalizeTab(initialTab);
+      // If customer requests overview and is not admin, redirect to bookings
+      if (!isCreator && normalized === 'overview' && !isAdmin) {
+        setActiveTab('bookings');
+      } else {
+        setActiveTab(normalized);
+      }
+    } else if (!isCreator && !isAdmin) {
+      setActiveTab('bookings');
     }
-  }, [initialTab]);
+  }, [initialTab, isCreator, isAdmin]);
 
   const switchTab = (tab: string) => {
     setActiveTab(tab);
@@ -198,7 +238,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      if (activeTab === 'overview' || activeTab === 'bookings') {
+      if (activeTab === 'overview' || activeTab === 'bookings' || activeTab === 'projects') {
         const [bList, pList] = await Promise.all([getBookings(), getProjects()]);
         setBookings(bList);
         setProjects(pList);
@@ -361,11 +401,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const handleSavePortfolioUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!session.creator) return;
+
+    if (!editingPortfolioItem && !uploadFileBase64) {
+      alert('Please select an image file to upload.');
+      return;
+    }
+
     setIsUploading(true);
 
     try {
-      let finalUrl = uploadCustomUrl.trim() || uploadFileBase64;
-      if (uploadFileBase64 && !uploadCustomUrl) {
+      let finalUrl = uploadFileBase64;
+      if (uploadFileBase64) {
         try {
           const driveRes = await uploadBase64File({
             creatorId: session.creator.creatorId,
@@ -499,6 +545,81 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
+  const handleOpenFeaturedModal = (creator: Creator, targetFeatured: boolean) => {
+    setFeaturedConfirmModal({
+      isOpen: true,
+      creator,
+      targetFeatured,
+    });
+    setAutoVerifyOnFeature(false);
+  };
+
+  const handleToggleFeaturedConfirm = async () => {
+    if (!featuredConfirmModal.creator) return;
+    const target = featuredConfirmModal.creator;
+    const targetFeatured = featuredConfirmModal.targetFeatured;
+    setIsUpdatingFeatured(true);
+
+    try {
+      if (targetFeatured && !target.verified && autoVerifyOnFeature) {
+        await adminVerifyCreator(target.creatorId, true);
+      }
+
+      const updated = await adminSetFeaturedCreator(target.creatorId, targetFeatured);
+      setAllCreators((prev) =>
+        prev.map((c) =>
+          c.creatorId === target.creatorId
+            ? {
+                ...c,
+                featured: targetFeatured,
+                verified: targetFeatured && autoVerifyOnFeature ? true : c.verified,
+              }
+            : c
+        )
+      );
+
+      if (adminDetailCreator && adminDetailCreator.creatorId === target.creatorId) {
+        setAdminDetailCreator({
+          ...adminDetailCreator,
+          featured: targetFeatured,
+          verified: targetFeatured && autoVerifyOnFeature ? true : adminDetailCreator.verified,
+        });
+      }
+
+      setAdminToast(
+        targetFeatured
+          ? `${target.displayName} is now featured in the SpotlightPhotography marketplace!`
+          : `${target.displayName} was removed from Featured Freelancers.`
+      );
+      setTimeout(() => setAdminToast(null), 3500);
+
+      setFeaturedConfirmModal({ isOpen: false, creator: null, targetFeatured: false });
+      setAutoVerifyOnFeature(false);
+    } catch (err: any) {
+      alert(err.message || 'Failed to update featured status');
+    } finally {
+      setIsUpdatingFeatured(false);
+    }
+  };
+
+  const handleVerifyCreatorToggle = async (creatorId: string, verified: boolean) => {
+    try {
+      const updated = await adminVerifyCreator(creatorId, verified);
+      setAllCreators((prev) => prev.map((c) => (c.creatorId === creatorId ? updated : c)));
+      if (adminDetailCreator && adminDetailCreator.creatorId === creatorId) {
+        setAdminDetailCreator({ ...adminDetailCreator, verified });
+      }
+      setAdminToast(
+        verified
+          ? `Freelancer marked as Verified with SpotlightPhotography badge.`
+          : `Verification badge removed.`
+      );
+      setTimeout(() => setAdminToast(null), 3000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const openClientMessage = (customerId: string, clientName?: string) => {
     switchTab('messages');
     const existing = conversations.find((c) => c.otherUserId === customerId);
@@ -552,22 +673,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Creator Top Profile Header Bar */}
+      {/* Profile Link Copied Toast */}
+      {profileCopiedToast && (
+        <div className="fixed top-20 right-5 z-50 p-4 rounded-2xl bg-neutral-900 border border-amber-500/50 text-amber-300 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-3">
+          <Sparkles className="w-5 h-5 text-amber-400" />
+          <span className="text-xs font-bold text-white">Creator profile link copied to clipboard!</span>
+        </div>
+      )}
+
+      {/* Top Profile Header Bar */}
       <div className="relative overflow-hidden p-6 sm:p-8 rounded-3xl bg-neutral-900 border border-neutral-800 shadow-2xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
           <div className="flex items-center gap-5">
             <SafeAvatar
               src={session.creator?.profileImageUrl || session.user.profileImage}
               name={session.creator?.displayName || session.user.fullName}
-              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl ring-2 ring-neutral-700 shadow-xl"
+              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl ring-2 ring-neutral-700 shadow-xl shrink-0"
               size={600}
             />
-            <div>
+            <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2.5">
                 <h1 className="text-xl sm:text-2xl font-extrabold text-white font-['Space_Grotesk']">
-                  {session.creator?.displayName || session.user.fullName}
+                  {isCreator ? (session.creator?.displayName || session.user.fullName) : 'My Projects & Bookings'}
                 </h1>
-                {session.creator?.username && (
+                {isCreator && session.creator?.username && (
                   <span className="text-xs font-mono font-semibold text-neutral-400 bg-neutral-950/80 px-2 py-0.5 rounded-lg border border-neutral-800">
                     @{session.creator.username}
                   </span>
@@ -577,82 +706,165 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-neutral-400">
-                <span className="flex items-center gap-1 text-amber-400 font-bold">
-                  <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                  {averageRating.toFixed(1)} ({reviewsCount} reviews)
-                </span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3.5 h-3.5 text-neutral-500" />
-                  {session.creator?.city || 'Dhaka'}, {session.creator?.country || 'Bangladesh'}
-                </span>
-                <span>•</span>
-                <span className="text-neutral-300 font-medium">
-                  From <strong className="text-white">৳{(session.creator?.startingPrice || 0).toLocaleString()} BDT</strong>
-                </span>
-              </div>
+              {isCreator ? (
+                <>
+                  <p className="text-xs text-neutral-400">
+                    Manage your bookings, portfolio, availability, messages and profile.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 pt-0.5 text-xs text-neutral-400">
+                    {reviewsCount > 0 ? (
+                      <span className="flex items-center gap-1 text-amber-400 font-bold">
+                        <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                        {averageRating.toFixed(1)} ({reviewsCount} {reviewsCount === 1 ? 'review' : 'reviews'})
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                        New
+                      </span>
+                    )}
+                    <span>•</span>
+                    <span className="flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-neutral-500" />
+                      {session.creator?.city || 'Dhaka'}, {session.creator?.country || 'Bangladesh'}
+                    </span>
+                    <span>•</span>
+                    <span className="text-neutral-300 font-medium">
+                      {(session.creator?.startingPrice || 0) > 0 ? (
+                        <>From <strong className="text-white">৳{(session.creator?.startingPrice || 0).toLocaleString()} BDT</strong></>
+                      ) : (
+                        <strong className="text-neutral-300">Contact for Pricing</strong>
+                      )}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-neutral-400">
+                  Track your creator bookings, project deliverables and messages
+                </p>
+              )}
             </div>
           </div>
 
           {/* Quick Header CTAs */}
           <div className="flex flex-wrap items-center gap-2.5">
             {isCreator && (
-              <button
-                onClick={() => {
-                  const uname = session.creator?.username || (session.user as any)?.username;
-                  if (onViewPublicProfile && uname) {
-                    onViewPublicProfile(uname);
-                  }
-                }}
-                className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-all flex items-center gap-2 shadow-sm border border-neutral-700/60"
-              >
-                <Eye className="w-4 h-4 text-rose-400" />
-                <span>View Public Profile</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopyProfileLink}
+                  className="px-3.5 py-2.5 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-xs font-bold text-neutral-300 hover:text-white transition-colors border border-neutral-800 flex items-center gap-2"
+                  title="Copy direct link to your creator portfolio"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Copy Profile Link</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const uname = session.creator?.username || (session.user as any)?.username;
+                    if (onViewPublicProfile && uname) {
+                      onViewPublicProfile(uname);
+                    }
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-all flex items-center gap-2 shadow-sm border border-neutral-700/60"
+                >
+                  <Eye className="w-4 h-4 text-rose-400" />
+                  <span>View Public Profile</span>
+                </button>
+              </>
             )}
 
             <button
               onClick={onGoHome}
               className="px-4 py-2.5 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-xs font-semibold text-neutral-300 transition-colors border border-neutral-800"
             >
-              Explore Directory
+              Explore Talent
             </button>
           </div>
         </div>
       </div>
 
-      {/* Navigation Tabs */}
+      {/* Navigation Tabs (Customer vs Creator) */}
       <div className="flex gap-1.5 border-b border-neutral-800 pb-2 overflow-x-auto text-xs font-bold no-scrollbar">
-        <button
-          onClick={() => switchTab('overview')}
-          className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
-            activeTab === 'overview'
-              ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
-              : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-          }`}
-        >
-          <Sparkles className="w-4 h-4" />
-          <span>Overview</span>
-        </button>
-
-        <button
-          onClick={() => switchTab('bookings')}
-          className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
-            activeTab === 'bookings'
-              ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
-              : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-          }`}
-        >
-          <CalendarIcon className="w-4 h-4" />
-          <span>Bookings ({bookings.length})</span>
-          {pendingCount > 0 && (
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-          )}
-        </button>
-
-        {isCreator && (
+        {!isCreator ? (
           <>
+            <button
+              onClick={() => switchTab('bookings')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'bookings' || activeTab === 'overview'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <CalendarIcon className="w-4 h-4" />
+              <span>My Bookings ({bookings.length})</span>
+            </button>
+
+            <button
+              onClick={() => switchTab('projects')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'projects'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <HardDrive className="w-4 h-4" />
+              <span>Active Projects ({projects.length})</span>
+            </button>
+
+            <button
+              onClick={() => switchTab('messages')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'messages'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>Messages ({conversations.length})</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={() => switchTab('overview')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'overview'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Overview</span>
+            </button>
+
+            <button
+              onClick={() => switchTab('bookings')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'bookings'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <CalendarIcon className="w-4 h-4" />
+              <span>Bookings ({bookings.length})</span>
+              {pendingCount > 0 && (
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              )}
+            </button>
+
+            <button
+              onClick={() => switchTab('messages')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'messages'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>Messages ({conversations.length})</span>
+            </button>
+
             <button
               onClick={() => switchTab('availability')}
               className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
@@ -676,33 +888,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <HardDrive className="w-4 h-4" />
               <span>Portfolio Studio ({portfolio.length})</span>
             </button>
+
+            <button
+              onClick={() => switchTab('settings')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'settings'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <SettingsIcon className="w-4 h-4" />
+              <span>Profile Settings</span>
+            </button>
           </>
-        )}
-
-        <button
-          onClick={() => switchTab('messages')}
-          className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
-            activeTab === 'messages'
-              ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
-              : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          <span>Messages ({conversations.length})</span>
-        </button>
-
-        {isCreator && (
-          <button
-            onClick={() => switchTab('settings')}
-            className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
-              activeTab === 'settings'
-                ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
-                : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-            }`}
-          >
-            <SettingsIcon className="w-4 h-4" />
-            <span>Settings</span>
-          </button>
         )}
 
         {isAdmin && (
@@ -710,11 +908,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             onClick={() => switchTab('admin')}
             className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
               activeTab === 'admin'
-                ? 'bg-amber-500 text-black shadow-md shadow-amber-500/25'
-                : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+                ? 'bg-amber-500 text-black shadow-md shadow-amber-500/25 font-bold'
+                : 'text-neutral-400 hover:text-white hover:bg-neutral-900 font-medium'
             }`}
           >
-            <ShieldCheck className="w-4 h-4" />
+            <ShieldCheck className={`w-4 h-4 ${activeTab === 'admin' ? 'text-black' : 'text-amber-400'}`} />
             <span>Admin Control</span>
           </button>
         )}
@@ -1170,7 +1368,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
 
           {/* Booking Cards List */}
-          {filteredBookings.length === 0 ? (
+          {bookings.length === 0 ? (
+            <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-4">
+              <CalendarIcon className="w-12 h-12 text-neutral-600 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">
+                  {isCreator ? 'No Bookings Yet' : 'You Have No Bookings Yet'}
+                </h3>
+                <p className="text-xs text-neutral-400 max-w-sm mx-auto">
+                  {isCreator
+                    ? 'Share your creator profile to start receiving booking requests and inquiries from clients across Bangladesh.'
+                    : 'Discover vetted photographers, cinematographers, and editors to book for your weddings, events, or brand shoots.'}
+                </p>
+              </div>
+              <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+                {isCreator ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleCopyProfileLink}
+                      className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/20 inline-flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Copy Profile Link</span>
+                    </button>
+                    {session.creator?.username && onViewPublicProfile && (
+                      <button
+                        type="button"
+                        onClick={() => onViewPublicProfile(session.creator!.username)}
+                        className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white"
+                      >
+                        View Storefront
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onGoHome}
+                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/20 inline-flex items-center gap-2"
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    <span>Explore Creators</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : filteredBookings.length === 0 ? (
             <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-3">
               <CalendarIcon className="w-10 h-10 text-neutral-600 mx-auto" />
               <h3 className="text-sm font-bold text-white">No Bookings Matching Filter</h3>
@@ -1288,6 +1532,112 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           Confirm Shoot
                         </button>
                       )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: ACTIVE PROJECTS (CUSTOMER & PRODUCTION WORKSPACE)                   */}
+      {/* ========================================================================= */}
+      {activeTab === 'projects' && (
+        <div className="space-y-6">
+          <div className="p-5 rounded-2xl bg-neutral-900 border border-neutral-800">
+            <h2 className="text-lg font-bold text-white font-['Space_Grotesk']">Active Projects &amp; Deliverables</h2>
+            <p className="text-xs text-neutral-400">Track production milestones, review drafts, and access Google Drive project folders</p>
+          </div>
+
+          {projects.length === 0 ? (
+            <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-4">
+              <HardDrive className="w-12 h-12 text-neutral-600 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">No Active Projects Yet</h3>
+                <p className="text-xs text-neutral-400 max-w-sm mx-auto">
+                  When a creator confirms your booking request, your dedicated project workspace and deliverable links will appear here.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={onGoHome}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/20 inline-flex items-center gap-2"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Explore Creators</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {projects.map((proj) => (
+                <div
+                  key={proj.projectId}
+                  className="p-5 rounded-3xl bg-neutral-900 border border-neutral-800 hover:border-neutral-700 transition-all space-y-4 flex flex-col justify-between"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <span className="text-[10px] font-mono font-bold text-neutral-500 uppercase">
+                          {proj.projectId}
+                        </span>
+                        <h4 className="text-base font-bold text-white mt-0.5">{proj.title}</h4>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        {proj.status}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs text-neutral-300 bg-neutral-950/70 p-3.5 rounded-2xl border border-neutral-800/80">
+                      <p>
+                        <strong className="text-neutral-400 font-normal">Creator:</strong>{' '}
+                        <span className="text-white font-medium">{proj.creatorName || 'Professional Creator'}</span>
+                      </p>
+                      {proj.startDate && (
+                        <p>
+                          <strong className="text-neutral-400 font-normal">Start Date:</strong> {proj.startDate}
+                        </p>
+                      )}
+                      {proj.deliveryDate && (
+                        <p>
+                          <strong className="text-neutral-400 font-normal">Estimated Delivery:</strong> {proj.deliveryDate}
+                        </p>
+                      )}
+                      {proj.notes && (
+                        <p className="text-neutral-400 text-[11px] pt-1 border-t border-neutral-800/80">
+                          {proj.notes}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-800/80">
+                    {proj.driveFolderId ? (
+                      <a
+                        href={`https://drive.google.com/drive/folders/${proj.driveFolderId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white transition-colors inline-flex items-center gap-1.5"
+                      >
+                        <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Deliverables Folder</span>
+                        <ExternalLink className="w-3 h-3 text-neutral-400" />
+                      </a>
+                    ) : (
+                      <span className="text-[11px] text-neutral-500">Workspace initializing</span>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openClientMessage(proj.creatorId, proj.creatorName)}
+                        className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-sky-400 transition-colors flex items-center gap-1.5"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Message</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1548,7 +1898,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 setEditingPortfolioItem(null);
                 setUploadTitle('');
                 setUploadFileBase64('');
-                setUploadCustomUrl('');
+                setUploadFileName('');
                 setShowUploadModal(true);
               }}
               className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg flex items-center gap-2 self-start sm:self-auto"
@@ -1576,20 +1926,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
 
           {/* Portfolio Grid */}
-          {portfolio.filter(
+          {portfolio.length === 0 ? (
+            <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-4">
+              <HardDrive className="w-12 h-12 text-neutral-600 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">Upload Your First Work</h3>
+                <p className="text-xs text-neutral-400 max-w-sm mx-auto">
+                  Add high-resolution image sets, cinema stills, or project deliverables to build your showcase and impress clients.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  onClick={() => {
+                    setEditingPortfolioItem(null);
+                    setUploadTitle('');
+                    setUploadFileBase64('');
+                    setUploadFileName('');
+                    setShowUploadModal(true);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/20 inline-flex items-center gap-2"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Upload First Work</span>
+                </button>
+              </div>
+            </div>
+          ) : portfolio.filter(
             (p) => portfolioCategoryFilter === 'all' || p.category === portfolioCategoryFilter
           ).length === 0 ? (
             <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-3">
               <HardDrive className="w-10 h-10 text-neutral-600 mx-auto" />
               <h3 className="text-sm font-bold text-white">No Items in this Category</h3>
               <p className="text-xs text-neutral-400 max-w-sm mx-auto">
-                Add high-resolution image sets, cinema stills, or project deliverables to impress clients.
+                No items found for category "{portfolioCategoryFilter}".
               </p>
               <button
-                onClick={() => setShowUploadModal(true)}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs text-white font-bold"
+                onClick={() => setPortfolioCategoryFilter('all')}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-white font-bold"
               >
-                Upload to Studio
+                Show All Works
               </button>
             </div>
           ) : (
@@ -1700,7 +2075,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                 {conversations.length === 0 ? (
-                  <p className="text-xs text-neutral-500 text-center py-10">No conversations found</p>
+                  <div className="text-center py-12 px-3 space-y-2 text-neutral-400">
+                    <MessageSquare className="w-8 h-8 text-neutral-600 mx-auto" />
+                    <p className="text-xs font-semibold text-neutral-300">
+                      {isCreator
+                        ? 'Clients will message you here when interested in your services.'
+                        : 'Your conversations with creative talent will appear here.'}
+                    </p>
+                    <p className="text-[11px] text-neutral-500 max-w-xs mx-auto">
+                      Direct production inquiries and project requests will appear here once initiated.
+                    </p>
+                  </div>
                 ) : (
                   conversations
                     .filter(
@@ -1722,10 +2107,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           {conv.otherUserName?.charAt(0) || 'U'}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-bold text-white truncate">{conv.otherUserName}</p>
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className="text-xs font-bold text-white truncate">{conv.otherUserName}</p>
+                              {conv.isGuest && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                                  Guest Inquiry
+                                </span>
+                              )}
+                            </div>
                             {conv.unreadCount > 0 && (
-                              <span className="w-2 h-2 rounded-full bg-rose-500" />
+                              <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
                             )}
                           </div>
                           <p className="text-[11px] text-neutral-400 truncate mt-0.5">{conv.lastMessage}</p>
@@ -1747,10 +2139,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         {conversations.find((c) => c.conversationId === activeConversationId)?.otherUserName?.charAt(0) || 'C'}
                       </div>
                       <div>
-                        <p className="text-xs font-bold text-white">
-                          {conversations.find((c) => c.conversationId === activeConversationId)?.otherUserName || 'Client'}
-                        </p>
-                        <span className="text-[10px] text-neutral-400">Direct production chat</span>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-bold text-white">
+                            {conversations.find((c) => c.conversationId === activeConversationId)?.otherUserName || 'Client'}
+                          </p>
+                          {conversations.find((c) => c.conversationId === activeConversationId)?.isGuest && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              Guest Inquiry
+                            </span>
+                          )}
+                        </div>
+                        {conversations.find((c) => c.conversationId === activeConversationId)?.isGuest ? (
+                          <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400 mt-0.5">
+                            <span>
+                              Email: <strong className="text-neutral-200">{conversations.find((c) => c.conversationId === activeConversationId)?.guestEmail}</strong>
+                            </span>
+                            {conversations.find((c) => c.conversationId === activeConversationId)?.guestPhone && (
+                              <span>
+                                • Phone: <strong className="text-neutral-200">{conversations.find((c) => c.conversationId === activeConversationId)?.guestPhone}</strong>
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-neutral-400">Direct production chat</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2051,65 +2463,450 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 7: ADMIN CONTROL                                                      */}
+      {/* TAB 7: ADMIN CONTROL (SPOTLIGHTPHOTOGRAPHY MOTHER ADMIN)                   */}
       {/* ========================================================================= */}
       {activeTab === 'admin' && isAdmin && (
         <div className="space-y-6">
-          <div className="p-5 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-white font-['Space_Grotesk']">
-                System Platform Control
+          {/* Admin Header & Cloud Config Bar */}
+          <div className="p-5 sm:p-6 rounded-3xl bg-neutral-900 border border-neutral-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  Mother Admin
+                </span>
+                <span className="text-xs text-neutral-400 font-medium">SpotlightPhotography • CreatorFlow</span>
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black text-white font-['Space_Grotesk'] tracking-tight">
+                Freelancers &amp; Placement Directory
               </h2>
-              <p className="text-xs text-neutral-400">Platform moderation and verification management</p>
+              <p className="text-xs text-neutral-400 max-w-2xl">
+                Curate verified creative talent and manage Featured Freelancer carousel placements across the marketplace.
+              </p>
             </div>
-            <button
-              onClick={onOpenSetup}
-              className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs"
-            >
-              System Cloud Config
-            </button>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={async () => {
+                  setLoading(true);
+                  try {
+                    const [stats, creatorsList] = await Promise.all([adminGetDashboard(), getCreators()]);
+                    setAdminStats(stats);
+                    setAllCreators(creatorsList);
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+                className="px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-semibold flex items-center gap-1.5 transition"
+                title="Refresh directory data"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
+
+              <button
+                onClick={onOpenSetup}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-md shadow-amber-500/20 transition flex items-center gap-1.5"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>System Cloud Config</span>
+              </button>
+            </div>
           </div>
 
-          {/* Creators Moderation Table */}
-          <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
-            <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
-              Creator Verification Directory ({allCreators.length})
-            </h3>
+          {/* Toast Notification */}
+          {adminToast && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-2 animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="font-medium">{adminToast}</span>
+              </div>
+              <button onClick={() => setAdminToast(null)} className="text-neutral-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
-            <div className="divide-y divide-neutral-800/80">
-              {allCreators.map((c) => (
-                <div key={c.creatorId} className="py-3.5 flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <SafeAvatar
-                      src={c.profileImageUrl}
-                      name={c.displayName}
-                      className="w-10 h-10 rounded-xl"
-                      size={400}
-                    />
-                    <div>
-                      <p className="text-xs font-bold text-white">
-                        {c.displayName} <span className="text-neutral-500 font-mono">(@{c.username})</span>
-                      </p>
-                      <p className="text-[11px] text-neutral-400">
-                        {c.city} • Starting ৳{c.startingPrice.toLocaleString()} BDT
-                      </p>
-                    </div>
-                  </div>
+          {/* 4 Stat Metric Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800">
+              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                Total Freelancers
+              </span>
+              <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-1">
+                {allCreators.length}
+              </p>
+              <span className="text-[10px] text-neutral-400">Registered creators</span>
+            </div>
 
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-amber-500/30 bg-gradient-to-br from-amber-500/5 to-transparent">
+              <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Crown className="w-3.5 h-3.5 fill-amber-400" />
+                Featured Talent
+              </span>
+              <p className="text-2xl font-black text-amber-400 font-['Space_Grotesk'] mt-1">
+                {allCreators.filter((c) => c.featured).length}
+              </p>
+              <span className="text-[10px] text-amber-400/80">Active in homepage carousel</span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800">
+              <span className="text-[11px] font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+                <CheckCircle className="w-3.5 h-3.5" />
+                Verified Creatives
+              </span>
+              <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-1">
+                {allCreators.filter((c) => c.verified).length}
+              </p>
+              <span className="text-[10px] text-neutral-400">Spotlight vetted</span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800">
+              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                Pending Verification
+              </span>
+              <p className="text-2xl font-black text-neutral-300 font-['Space_Grotesk'] mt-1">
+                {allCreators.filter((c) => !c.verified).length}
+              </p>
+              <span className="text-[10px] text-neutral-400">Awaiting vetting</span>
+            </div>
+          </div>
+
+          {/* Search Bar & Filter Tabs */}
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              {/* Filter Tabs */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                <button
+                  onClick={() => setAdminCreatorFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+                    adminCreatorFilter === 'all'
+                      ? 'bg-white text-black shadow'
+                      : 'bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800'
+                  }`}
+                >
+                  All ({allCreators.length})
+                </button>
+
+                <button
+                  onClick={() => setAdminCreatorFilter('featured')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 flex items-center gap-1 ${
+                    adminCreatorFilter === 'featured'
+                      ? 'bg-amber-500 text-black shadow'
+                      : 'bg-neutral-900 text-neutral-400 hover:text-amber-300 border border-neutral-800'
+                  }`}
+                >
+                  <Crown className="w-3 h-3" />
+                  Featured ({allCreators.filter((c) => c.featured).length})
+                </button>
+
+                <button
+                  onClick={() => setAdminCreatorFilter('verified')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 flex items-center gap-1 ${
+                    adminCreatorFilter === 'verified'
+                      ? 'bg-sky-500 text-black shadow'
+                      : 'bg-neutral-900 text-neutral-400 hover:text-sky-300 border border-neutral-800'
+                  }`}
+                >
+                  <CheckCircle className="w-3 h-3" />
+                  Verified ({allCreators.filter((c) => c.verified).length})
+                </button>
+
+                <button
+                  onClick={() => setAdminCreatorFilter('pending')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+                    adminCreatorFilter === 'pending'
+                      ? 'bg-rose-500 text-white shadow'
+                      : 'bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800'
+                  }`}
+                >
+                  Pending ({allCreators.filter((c) => !c.verified).length})
+                </button>
+
+                <button
+                  onClick={() => setAdminCreatorFilter('suspended')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+                    adminCreatorFilter === 'suspended'
+                      ? 'bg-neutral-700 text-white shadow'
+                      : 'bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800'
+                  }`}
+                >
+                  Suspended ({allCreators.filter((c) => (c as any).status === 'suspended').length})
+                </button>
+              </div>
+
+              {/* Search input */}
+              <div className="relative w-full sm:w-72">
+                <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={adminCreatorSearch}
+                  onChange={(e) => setAdminCreatorSearch(e.target.value)}
+                  placeholder="Search by name, @handle, role, city..."
+                  className="w-full pl-9 pr-8 py-2 rounded-xl bg-neutral-900 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500/50"
+                />
+                {adminCreatorSearch && (
                   <button
-                    onClick={() => handleVerifyCreator(c.creatorId, !c.verified)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-                      c.verified
-                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
-                        : 'bg-neutral-800 text-neutral-400 hover:text-white'
-                    }`}
+                    onClick={() => setAdminCreatorSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white"
                   >
-                    {c.verified ? 'Verified ✓' : 'Mark Verified'}
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 11-COLUMN ADMIN CREATOR MANAGEMENT TABLE */}
+          {(() => {
+            const filtered = allCreators.filter((c) => {
+              if (adminCreatorFilter === 'featured' && !c.featured) return false;
+              if (adminCreatorFilter === 'verified' && !c.verified) return false;
+              if (adminCreatorFilter === 'pending' && c.verified) return false;
+              if (adminCreatorFilter === 'suspended' && (c as any).status !== 'suspended') return false;
+
+              if (adminCreatorSearch.trim()) {
+                const q = adminCreatorSearch.toLowerCase().trim();
+                const matchName = (c.displayName || '').toLowerCase().includes(q);
+                const matchUsername = (c.username || '').toLowerCase().includes(q);
+                const matchCity = (c.city || '').toLowerCase().includes(q);
+                const matchRoles = (c.roles || []).some((r) => r.toLowerCase().includes(q));
+                if (!matchName && !matchUsername && !matchCity && !matchRoles) return false;
+              }
+              return true;
+            });
+
+            if (filtered.length === 0) {
+              return (
+                <div className="p-12 text-center rounded-3xl bg-neutral-900 border border-neutral-800 space-y-3">
+                  <UserIcon className="w-10 h-10 text-neutral-600 mx-auto" />
+                  <p className="text-sm font-bold text-white">No freelancers match your filter</p>
+                  <p className="text-xs text-neutral-400">Try adjusting your search query or switching tabs.</p>
+                  <button
+                    onClick={() => {
+                      setAdminCreatorFilter('all');
+                      setAdminCreatorSearch('');
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 font-semibold"
+                  >
+                    Reset Filters
                   </button>
                 </div>
-              ))}
-            </div>
-          </div>
+              );
+            }
+
+            return (
+              <div className="rounded-3xl bg-neutral-900 border border-neutral-800 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-neutral-300">
+                    <thead className="bg-neutral-950/80 text-[11px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-800">
+                      <tr>
+                        <th className="py-3.5 px-4 w-12">Profile</th>
+                        <th className="py-3.5 px-4">Name</th>
+                        <th className="py-3.5 px-4">Primary Role</th>
+                        <th className="py-3.5 px-4">Location</th>
+                        <th className="py-3.5 px-3">Rating</th>
+                        <th className="py-3.5 px-3">Reviews</th>
+                        <th className="py-3.5 px-4">Verification</th>
+                        <th className="py-3.5 px-3">Account</th>
+                        <th className="py-3.5 px-4">Featured</th>
+                        <th className="py-3.5 px-3">Joined</th>
+                        <th className="py-3.5 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-800/60 font-medium">
+                      {filtered.map((c) => {
+                        const isSuspended = (c as any).status === 'suspended';
+                        const joinedStr = c.createdAt
+                          ? new Date(c.createdAt).toLocaleDateString('en-US', {
+                              month: 'short',
+                              year: 'numeric',
+                            })
+                          : 'Recent';
+
+                        return (
+                          <tr
+                            key={c.creatorId}
+                            className={`hover:bg-neutral-800/40 transition-colors ${
+                              c.featured ? 'bg-amber-500/[0.02]' : ''
+                            }`}
+                          >
+                            {/* 1. Profile Avatar */}
+                            <td className="py-3.5 px-4">
+                              <SafeAvatar
+                                src={c.profileImageUrl}
+                                name={c.displayName}
+                                className="w-10 h-10 rounded-xl border border-neutral-800"
+                                size={400}
+                              />
+                            </td>
+
+                            {/* 2. Name & Username */}
+                            <td className="py-3.5 px-4">
+                              <div className="flex flex-col">
+                                <span className="font-bold text-white flex items-center gap-1.5">
+                                  {c.displayName}
+                                  {c.verified && (
+                                    <CheckCircle className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                                  )}
+                                </span>
+                                <span className="text-[11px] text-neutral-500 font-mono">
+                                  @{c.username}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* 3. Primary Role */}
+                            <td className="py-3.5 px-4">
+                              <span className="px-2.5 py-1 rounded-lg bg-neutral-800 text-neutral-300 font-medium text-[11px] inline-block whitespace-nowrap">
+                                {c.roles?.[0] || 'Creative'}
+                              </span>
+                            </td>
+
+                            {/* 4. Location */}
+                            <td className="py-3.5 px-4">
+                              <span className="flex items-center gap-1 text-neutral-300 whitespace-nowrap">
+                                <MapPin className="w-3 h-3 text-neutral-500 shrink-0" />
+                                {c.city || 'Dhaka'}
+                              </span>
+                            </td>
+
+                            {/* 5. Rating */}
+                            <td className="py-3.5 px-3">
+                              <span className="flex items-center gap-1 text-amber-400 font-bold">
+                                <Star className="w-3.5 h-3.5 fill-amber-400" />
+                                {(c.rating || 5.0).toFixed(1)}
+                              </span>
+                            </td>
+
+                            {/* 6. Review Count */}
+                            <td className="py-3.5 px-3">
+                              <span className="text-neutral-400 whitespace-nowrap">
+                                {c.reviewCount || 0} reviews
+                              </span>
+                            </td>
+
+                            {/* 7. Verification Status */}
+                            <td className="py-3.5 px-4">
+                              <button
+                                onClick={() => handleVerifyCreatorToggle(c.creatorId, !c.verified)}
+                                title={c.verified ? 'Revoke verified badge' : 'Grant verified badge'}
+                                className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition flex items-center gap-1 ${
+                                  c.verified
+                                    ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25'
+                                    : 'bg-neutral-800 text-neutral-400 border border-neutral-700/60 hover:text-white hover:border-neutral-500'
+                                }`}
+                              >
+                                {c.verified ? (
+                                  <>
+                                    <CheckCircle className="w-3 h-3 text-sky-400" />
+                                    <span>Verified</span>
+                                  </>
+                                ) : (
+                                  <span>Unverified</span>
+                                )}
+                              </button>
+                            </td>
+
+                            {/* 8. Account Status */}
+                            <td className="py-3.5 px-3">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold ${
+                                  isSuspended
+                                    ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                }`}
+                              >
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    isSuspended ? 'bg-rose-400' : 'bg-emerald-400'
+                                  }`}
+                                />
+                                {isSuspended ? 'Suspended' : 'Active'}
+                              </span>
+                            </td>
+
+                            {/* 9. Featured Status */}
+                            <td className="py-3.5 px-4">
+                              {c.featured ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-amber-500/15 text-amber-300 border border-amber-500/30 shadow-sm shadow-amber-500/10">
+                                  <Crown className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                  Featured
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium text-neutral-500 bg-neutral-800/60 border border-neutral-800">
+                                  Not Featured
+                                </span>
+                              )}
+                            </td>
+
+                            {/* 10. Joined Date */}
+                            <td className="py-3.5 px-3 text-neutral-400 text-[11px] whitespace-nowrap">
+                              {joinedStr}
+                            </td>
+
+                            {/* 11. Actions */}
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {c.featured ? (
+                                  <button
+                                    onClick={() => handleOpenFeaturedModal(c, false)}
+                                    className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700 transition"
+                                    title="Remove from homepage carousel"
+                                  >
+                                    Remove Featured
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleOpenFeaturedModal(c, true)}
+                                    className="px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-sm shadow-amber-500/20 transition flex items-center gap-1.5"
+                                    title="Feature in homepage carousel"
+                                  >
+                                    <Crown className="w-3.5 h-3.5 fill-black" />
+                                    <span>Mark Featured</span>
+                                  </button>
+                                )}
+
+                                <button
+                                  onClick={() => setAdminDetailCreator(c)}
+                                  className="p-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition"
+                                  title="Inspect full creator details"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                </button>
+
+                                <button
+                                  onClick={() => {
+                                    if (onViewPublicProfile) {
+                                      onViewPublicProfile(c.username);
+                                    } else {
+                                      window.location.href = `/creator/${c.username}`;
+                                    }
+                                  }}
+                                  className="p-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition"
+                                  title="View live public profile"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="p-3.5 bg-neutral-950/70 border-t border-neutral-800 text-[11px] text-neutral-400 flex flex-col sm:flex-row items-center justify-between gap-2">
+                  <span>
+                    Showing {filtered.length} of {allCreators.length} creative professionals
+                  </span>
+                  <span className="text-neutral-500">
+                    Featured status is strictly managed by SpotlightPhotography Mother Admin.
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2276,7 +3073,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-neutral-400 mb-1">
-                  Upload Image File
+                  Upload Image File {!editingPortfolioItem && '*'}
                 </label>
                 <input
                   type="file"
@@ -2284,19 +3081,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   onChange={handleFileUpload}
                   className="w-full text-xs text-neutral-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-neutral-800 file:text-white hover:file:bg-neutral-700"
                 />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 mb-1">
-                  Or Direct Image/Thumbnail URL
-                </label>
-                <input
-                  type="text"
-                  value={uploadCustomUrl}
-                  onChange={(e) => setUploadCustomUrl(e.target.value)}
-                  placeholder="https://images.unsplash.com/..."
-                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
-                />
+                {uploadFileName && (
+                  <p className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1 font-mono">
+                    <span>Selected: {uploadFileName}</span>
+                  </p>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
@@ -2385,6 +3174,350 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MOTHER ADMIN: FEATURE / UNFEATURE CONFIRMATION MODAL                      */}
+      {/* ========================================================================= */}
+      {featuredConfirmModal.isOpen && featuredConfirmModal.creator && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-5 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-start gap-3.5">
+              <div
+                className={`p-3 rounded-2xl shrink-0 ${
+                  featuredConfirmModal.targetFeatured
+                    ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                    : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                }`}
+              >
+                {featuredConfirmModal.targetFeatured ? (
+                  <Crown className="w-6 h-6 fill-amber-400 text-amber-400" />
+                ) : (
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                )}
+              </div>
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-amber-400 font-mono">
+                  SpotlightPhotography Mother Admin
+                </span>
+                <h3 className="text-lg font-black text-white font-['Space_Grotesk']">
+                  {featuredConfirmModal.targetFeatured
+                    ? 'Feature this freelancer?'
+                    : 'Remove from Featured?'}
+                </h3>
+                <p className="text-xs text-neutral-300 leading-relaxed">
+                  {featuredConfirmModal.targetFeatured
+                    ? 'This freelancer will appear in the Featured Freelancers section of CreatorFlow.'
+                    : 'The freelancer will remain active in the marketplace but will no longer appear in the Featured section.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Freelancer Preview Card */}
+            <div className="p-3.5 rounded-2xl bg-neutral-950 border border-neutral-800 flex items-center gap-3">
+              <SafeAvatar
+                src={featuredConfirmModal.creator.profileImageUrl}
+                name={featuredConfirmModal.creator.displayName}
+                className="w-12 h-12 rounded-xl border border-neutral-800 shrink-0"
+                size={400}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-sm text-white truncate">
+                    {featuredConfirmModal.creator.displayName}
+                  </span>
+                  {featuredConfirmModal.creator.verified && (
+                    <CheckCircle className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  )}
+                </div>
+                <p className="text-xs text-neutral-400 truncate">
+                  @{featuredConfirmModal.creator.username} • {featuredConfirmModal.creator.roles?.[0] || 'Creative'}
+                </p>
+                <div className="flex items-center gap-2 mt-1 text-[11px] text-neutral-400">
+                  <span className="flex items-center gap-1 text-amber-400 font-bold">
+                    <Star className="w-3 h-3 fill-amber-400" />
+                    {(featuredConfirmModal.creator.rating || 5.0).toFixed(1)}
+                  </span>
+                  <span>•</span>
+                  <span>{featuredConfirmModal.creator.city || 'Dhaka'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Verification Advisory (if attempting to feature unverified talent) */}
+            {featuredConfirmModal.targetFeatured && !featuredConfirmModal.creator.verified && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                <div className="flex items-start gap-2 text-xs text-amber-200">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <p className="leading-snug">
+                    <strong className="font-bold">Advisory:</strong> This freelancer is not yet verified. SpotlightPhotography recommends vetting and verifying talent before featuring them in public curations.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-white pt-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoVerifyOnFeature}
+                    onChange={(e) => setAutoVerifyOnFeature(e.target.checked)}
+                    className="w-4 h-4 rounded border-neutral-700 bg-neutral-900 text-amber-500 focus:ring-0"
+                  />
+                  <span>Also mark freelancer as Verified with SpotlightPhotography badge</span>
+                </label>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setFeaturedConfirmModal({ isOpen: false, creator: null, targetFeatured: false });
+                  setAutoVerifyOnFeature(false);
+                }}
+                disabled={isUpdatingFeatured}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 font-semibold transition"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleFeaturedConfirm}
+                disabled={isUpdatingFeatured}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+                  featuredConfirmModal.targetFeatured
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-lg shadow-amber-500/25'
+                    : 'bg-neutral-800 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-800 border border-neutral-700 text-neutral-200'
+                } disabled:opacity-50`}
+              >
+                {isUpdatingFeatured ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : featuredConfirmModal.targetFeatured ? (
+                  <Crown className="w-3.5 h-3.5 fill-black" />
+                ) : null}
+                <span>
+                  {isUpdatingFeatured
+                    ? 'Updating...'
+                    : featuredConfirmModal.targetFeatured
+                    ? 'Mark Featured'
+                    : 'Remove Featured'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MOTHER ADMIN: CREATOR DETAIL INSPECTION DRAWER / MODAL                     */}
+      {/* ========================================================================= */}
+      {adminDetailCreator && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-lg bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+            {/* Header & Close */}
+            <div className="flex items-start justify-between border-b border-neutral-800 pb-4">
+              <div className="flex items-center gap-3">
+                <SafeAvatar
+                  src={adminDetailCreator.profileImageUrl}
+                  name={adminDetailCreator.displayName}
+                  className="w-14 h-14 rounded-2xl border border-neutral-800 shrink-0"
+                  size={400}
+                />
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="text-lg font-black text-white font-['Space_Grotesk']">
+                      {adminDetailCreator.displayName}
+                    </h3>
+                    {adminDetailCreator.verified && (
+                      <CheckCircle className="w-4 h-4 text-sky-400 shrink-0" />
+                    )}
+                  </div>
+                  <p className="text-xs text-neutral-400 font-mono">
+                    @{adminDetailCreator.username}
+                  </p>
+                  <p className="text-xs text-neutral-400 mt-0.5">
+                    {adminDetailCreator.roles?.join(' • ') || 'Creative Talent'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setAdminDetailCreator(null)}
+                className="p-1.5 rounded-xl bg-neutral-800 text-neutral-400 hover:text-white transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Quick Status Bar */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">
+                    Featured Status
+                  </span>
+                  <span className="text-xs font-bold text-white mt-0.5 block">
+                    {adminDetailCreator.featured ? 'Featured on Marketplace' : 'Standard Directory'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    handleOpenFeaturedModal(adminDetailCreator, !adminDetailCreator.featured);
+                  }}
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
+                    adminDetailCreator.featured
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                      : 'bg-neutral-800 text-neutral-300 hover:text-white hover:bg-neutral-700'
+                  }`}
+                >
+                  <Crown className="w-3 h-3" />
+                  {adminDetailCreator.featured ? 'Featured' : 'Make Featured'}
+                </button>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">
+                    Spotlight Vetting
+                  </span>
+                  <span className="text-xs font-bold text-white mt-0.5 block">
+                    {adminDetailCreator.verified ? 'Verified Talent' : 'Unverified'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleVerifyCreatorToggle(adminDetailCreator.creatorId, !adminDetailCreator.verified)}
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
+                    adminDetailCreator.verified
+                      ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
+                      : 'bg-neutral-800 text-neutral-300 hover:text-white hover:bg-neutral-700'
+                  }`}
+                >
+                  <CheckCircle className="w-3 h-3" />
+                  {adminDetailCreator.verified ? 'Verified' : 'Verify'}
+                </button>
+              </div>
+            </div>
+
+            {/* Profile Overview Stats */}
+            <div className="grid grid-cols-3 gap-2.5 text-center">
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800">
+                <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider block">
+                  Rating
+                </span>
+                <span className="text-base font-black text-amber-400 mt-1 flex items-center justify-center gap-1">
+                  <Star className="w-3.5 h-3.5 fill-amber-400" />
+                  {(adminDetailCreator.rating || 5.0).toFixed(1)}
+                </span>
+                <span className="text-[10px] text-neutral-400">{adminDetailCreator.reviewCount || 0} reviews</span>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800">
+                <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider block">
+                  Starting At
+                </span>
+                <span className="text-base font-black text-white mt-1 block">
+                  ৳{(adminDetailCreator.startingPrice || 0).toLocaleString()}
+                </span>
+                <span className="text-[10px] text-neutral-400">BDT base rate</span>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800">
+                <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider block">
+                  Experience
+                </span>
+                <span className="text-base font-black text-white mt-1 block">
+                  {adminDetailCreator.experienceYears || 1} Years
+                </span>
+                <span className="text-[10px] text-neutral-400">Industry track</span>
+              </div>
+            </div>
+
+            {/* Bio */}
+            {adminDetailCreator.bio && (
+              <div className="space-y-1 text-xs">
+                <span className="font-bold text-neutral-400 block uppercase tracking-wider text-[10px]">
+                  About
+                </span>
+                <p className="text-neutral-300 leading-relaxed bg-neutral-950 p-3 rounded-2xl border border-neutral-800">
+                  {adminDetailCreator.bio}
+                </p>
+              </div>
+            )}
+
+            {/* Location & Coverage */}
+            <div className="space-y-1 text-xs">
+              <span className="font-bold text-neutral-400 block uppercase tracking-wider text-[10px]">
+                Location &amp; Service Coverage
+              </span>
+              <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-1.5 text-neutral-300">
+                <div className="flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-neutral-500" />
+                  <span>
+                    {adminDetailCreator.city || 'Dhaka'}, {adminDetailCreator.district || 'Dhaka'}, {adminDetailCreator.country || 'Bangladesh'}
+                  </span>
+                </div>
+                {adminDetailCreator.serviceAreas && adminDetailCreator.serviceAreas.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {adminDetailCreator.serviceAreas.map((area, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 rounded-md bg-neutral-900 border border-neutral-800 text-[10px] text-neutral-400"
+                      >
+                        {area}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Skills & Equipment */}
+            {adminDetailCreator.skills && adminDetailCreator.skills.length > 0 && (
+              <div className="space-y-1 text-xs">
+                <span className="font-bold text-neutral-400 block uppercase tracking-wider text-[10px]">
+                  Skills &amp; Specialties
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {adminDetailCreator.skills.map((skill, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-300"
+                    >
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Footer Action: Open Public Profile */}
+            <div className="flex items-center justify-between pt-3 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setAdminDetailCreator(null)}
+                className="px-4 py-2 rounded-xl bg-neutral-800 text-neutral-300 hover:text-white text-xs font-semibold"
+              >
+                Close Drawer
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (onViewPublicProfile) {
+                    onViewPublicProfile(adminDetailCreator.username);
+                  } else {
+                    window.location.href = `/creator/${adminDetailCreator.username}`;
+                  }
+                  setAdminDetailCreator(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5"
+              >
+                <span>View Public Profile</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,1 +1,67 @@
 @import "tailwindcss";
+
+@keyframes marquee-forward {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes marquee-reverse {
+  0% {
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.animate-marquee-forward {
+  animation: marquee-forward 38s linear infinite;
+  will-change: transform;
+}
+
+.animate-marquee-reverse {
+  animation: marquee-reverse 38s linear infinite;
+  will-change: transform;
+}
+
+/* Pause animation on hover */
+.hover-pause:hover .animate-marquee-forward,
+.hover-pause:hover .animate-marquee-reverse {
+  animation-play-state: paused;
+}
+
+/* Edge mask fade */
+.edge-fade-mask {
+  mask-image: linear-gradient(to right, transparent 0%, black 5%, black 95%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 95%, transparent 100%);
+}
+
+@media (max-width: 640px) {
+  .animate-marquee-forward {
+    animation-duration: 46s;
+  }
+  .animate-marquee-reverse {
+    animation-duration: 46s;
+  }
+  .edge-fade-mask {
+    mask-image: linear-gradient(to right, transparent 0%, black 3%, black 97%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, black 3%, black 97%, transparent 100%);
+  }
+}
+
+/* Respect user preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee-forward,
+  .animate-marquee-reverse {
+    animation: none !important;
+    transform: none !important;
+  }
+  .reduce-motion-scroll {
+    overflow-x: auto !important;
+    scroll-behavior: auto !important;
+  }
+}

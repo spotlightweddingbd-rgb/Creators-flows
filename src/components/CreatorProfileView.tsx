@@ -81,7 +81,7 @@ interface CreatorProfileViewProps {
   onPortfolioUpdate?: (newPortfolios: PortfolioItem[]) => void;
 }
 
-type ProfileTab = 'overview' | 'portfolio' | 'services' | 'reviews' | 'about';
+type ProfileTab = 'overview' | 'portfolio' | 'services' | 'availability' | 'reviews' | 'about';
 
 export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
   creator: initialCreator,
@@ -550,13 +550,6 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
           <ArrowLeft className="w-3.5 h-3.5" />
           <span>Explore Talent</span>
         </button>
-
-        {isOwner && (
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>You are viewing your own profile (Owner Mode)</span>
-          </div>
-        )}
       </div>
 
       {/* ========================================================================= */}
@@ -700,10 +693,16 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
                     {creator.city}, {creator.country}
                   </span>
                   <span>•</span>
-                  <span className="flex items-center gap-1 text-amber-400 font-bold">
-                    <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                    {creator.rating.toFixed(1)} ({creator.reviewCount} reviews)
-                  </span>
+                  {creator.reviewCount > 0 ? (
+                    <span className="flex items-center gap-1 text-amber-400 font-bold">
+                      <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                      {creator.rating.toFixed(1)} ({creator.reviewCount} {creator.reviewCount === 1 ? 'review' : 'reviews'})
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 text-xs font-bold">
+                      New
+                    </span>
+                  )}
                 </div>
 
                 {/* Primary Roles */}
@@ -717,7 +716,11 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
                     </span>
                   ))}
                   <span className="text-xs text-neutral-400 font-medium pl-1">
-                    • From <strong className="text-white">৳{creator.startingPrice.toLocaleString()} BDT</strong>
+                    • {creator.startingPrice > 0 ? (
+                      <>From <strong className="text-white">৳{creator.startingPrice.toLocaleString()} BDT</strong></>
+                    ) : (
+                      <strong className="text-neutral-300">Contact for Pricing</strong>
+                    )}
                   </span>
                 </div>
               </div>
@@ -763,17 +766,23 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
                   <button
                     onClick={() => onMessage(creator)}
                     className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold flex items-center gap-2 transition-colors border border-neutral-700"
+                    title="Send a message or inquiry (No account required)"
                   >
-                    <MessageSquare className="w-4 h-4" />
+                    <MessageSquare className="w-4 h-4 text-sky-400" />
                     <span>Message</span>
                   </button>
 
                   <button
                     onClick={() => onBook(creator)}
                     className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/25 flex items-center gap-2 transition-all hover:scale-[1.02]"
+                    title="Send a project request and lock shoot dates (Account required)"
                   >
                     <CalendarIcon className="w-4 h-4" />
-                    <span>Book Project (৳{creator.startingPrice.toLocaleString()} BDT)</span>
+                    <span>
+                      {creator.startingPrice > 0
+                        ? `Send Project Request (From ৳${creator.startingPrice.toLocaleString()} BDT)`
+                        : 'Send Project Request'}
+                    </span>
                   </button>
 
                   <button
@@ -802,6 +811,7 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
                 { id: 'overview', label: 'Overview', icon: Sparkles },
                 { id: 'portfolio', label: `Portfolio (${portfolios.length})`, icon: Film },
                 { id: 'services', label: `Services & Packages (${packages.length})`, icon: Layers },
+                { id: 'availability', label: 'Availability', icon: Clock },
                 { id: 'reviews', label: `Reviews (${reviews.length})`, icon: Star },
                 { id: 'about', label: 'About', icon: UserIcon },
               ].map((tab) => {
@@ -905,7 +915,9 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
                   <DollarSign className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                   <div>
                     <span className="font-semibold text-white">
-                      Starting at ৳{creator.startingPrice.toLocaleString()} BDT
+                      {creator.startingPrice > 0
+                        ? `Starting at ৳${creator.startingPrice.toLocaleString()} BDT`
+                        : 'Contact for Pricing'}
                     </span>
                     <p className="text-[11px] text-neutral-400">Direct booking milestone protection</p>
                   </div>
@@ -1366,6 +1378,95 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
       )}
 
       {/* ========================================================================= */}
+      {/* 4b. TAB CONTENT: AVAILABILITY                                             */}
+      {/* ========================================================================= */}
+      {activeTab === 'availability' && (
+        <div className="space-y-6 max-w-4xl">
+          <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-6 shadow-xl">
+            <div>
+              <h2 className="text-lg font-bold text-white font-['Space_Grotesk']">
+                Working Schedule &amp; Availability
+              </h2>
+              <p className="text-xs text-neutral-400">
+                Check dates and reserved slots before scheduling your production booking
+              </p>
+            </div>
+
+            {!isOwner && (
+              <button
+                onClick={() => onBook(creator)}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs shadow-lg shadow-rose-500/20 shrink-0 inline-flex items-center gap-2"
+              >
+                <span>Request Booking</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4 shadow-xl">
+              <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                <Clock className="w-4 h-4 text-rose-400" />
+                <span>General Booking Policy</span>
+              </h3>
+              <div className="space-y-2.5 text-xs text-neutral-300">
+                <div className="flex justify-between items-center py-1.5 border-b border-neutral-800/60">
+                  <span className="text-neutral-500">Service Coverage:</span>
+                  <span className="text-white font-medium">{creator.serviceAreas.join(', ') || creator.city}</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5 border-b border-neutral-800/60">
+                  <span className="text-neutral-500">Advance Notice:</span>
+                  <span className="text-white font-medium">At least 48 hours recommended</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5 border-b border-neutral-800/60">
+                  <span className="text-neutral-500">Starting Rate:</span>
+                  <span className="text-amber-400 font-bold font-mono">
+                    {creator.startingPrice > 0 ? `From ৳${creator.startingPrice.toLocaleString()} BDT` : 'Contact for Pricing'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center py-1.5">
+                  <span className="text-neutral-500">Booking Confirmation:</span>
+                  <span className="text-emerald-400 font-medium">Reviewed &amp; confirmed by Creator</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4 shadow-xl">
+              <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                <CalendarIcon className="w-4 h-4 text-amber-400" />
+                <span>Current Blackout / Booked Dates</span>
+              </h3>
+              {availability.filter((a) => a.status === 'unavailable').length === 0 ? (
+                <div className="text-center py-8 bg-neutral-950/60 rounded-2xl border border-neutral-800/80 p-4 space-y-2">
+                  <CheckCircle className="w-6 h-6 text-emerald-400 mx-auto" />
+                  <p className="text-xs font-semibold text-white">Full Calendar Open</p>
+                  <p className="text-[11px] text-neutral-400">
+                    No blackout dates currently scheduled. Send a request with your desired shoot date.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                  {availability
+                    .filter((a) => a.status === 'unavailable')
+                    .map((slot) => (
+                      <div
+                        key={slot.availabilityId || slot.date}
+                        className="p-3 rounded-xl bg-neutral-950 border border-neutral-800/80 flex items-center justify-between text-xs"
+                      >
+                        <span className="font-mono text-neutral-300 font-bold">{slot.date}</span>
+                        <span className="px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] font-semibold">
+                          Booked / Unavailable
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* 5. TAB CONTENT: REVIEWS                                                   */}
       {/* ========================================================================= */}
       {activeTab === 'reviews' && (
@@ -1381,19 +1482,32 @@ export const CreatorProfileView: React.FC<CreatorProfileViewProps> = ({
             </div>
 
             <div className="flex items-center gap-4 bg-neutral-950 p-4 rounded-2xl border border-neutral-800">
-              <div className="text-3xl font-extrabold text-amber-400 font-['Space_Grotesk']">
-                {creator.rating.toFixed(1)}
-              </div>
-              <div>
-                <div className="flex items-center text-amber-400">
-                  {[...Array(5)].map((_, i) => (
-                    <Star key={i} className="w-4 h-4 fill-amber-400" />
-                  ))}
+              {creator.reviewCount > 0 ? (
+                <>
+                  <div className="text-3xl font-extrabold text-amber-400 font-['Space_Grotesk']">
+                    {creator.rating.toFixed(1)}
+                  </div>
+                  <div>
+                    <div className="flex items-center text-amber-400">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} className="w-4 h-4 fill-amber-400" />
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-neutral-400 mt-0.5">
+                      Based on {creator.reviewCount} client {creator.reviewCount === 1 ? 'review' : 'reviews'}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="px-3 py-1 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-xs font-bold">
+                    New Creator
+                  </span>
+                  <p className="text-xs text-neutral-400">
+                    No client reviews submitted yet. Be the first to leave a review!
+                  </p>
                 </div>
-                <p className="text-[11px] text-neutral-400 mt-0.5">
-                  Based on {creator.reviewCount} client reviews
-                </p>
-              </div>
+              )}
             </div>
           </div>
 

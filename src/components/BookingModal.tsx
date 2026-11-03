@@ -133,6 +133,36 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           </button>
         </div>
 
+        {/* 5-Step Booking Flow Indicator */}
+        <div className="bg-neutral-950/40 border-b border-neutral-800/80 px-5 py-2.5 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-semibold text-neutral-400 whitespace-nowrap">
+            <span className="text-amber-400 flex items-center gap-1">
+              <span className="w-4 h-4 rounded-full bg-amber-400/20 text-amber-300 inline-flex items-center justify-center text-[10px] font-bold">1</span>
+              {selectedPackage ? selectedPackage.name : 'Package / Custom'}
+            </span>
+            <span className="text-neutral-600">→</span>
+            <span className="text-neutral-300 flex items-center gap-1">
+              <span className="w-4 h-4 rounded-full bg-neutral-800 text-neutral-300 inline-flex items-center justify-center text-[10px] font-bold">2</span>
+              Date &amp; Time
+            </span>
+            <span className="text-neutral-600">→</span>
+            <span className="text-neutral-300 flex items-center gap-1">
+              <span className="w-4 h-4 rounded-full bg-neutral-800 text-neutral-300 inline-flex items-center justify-center text-[10px] font-bold">3</span>
+              Project Details
+            </span>
+            <span className="text-neutral-600">→</span>
+            <span className="text-neutral-300 flex items-center gap-1">
+              <span className="w-4 h-4 rounded-full bg-neutral-800 text-neutral-300 inline-flex items-center justify-center text-[10px] font-bold">4</span>
+              Review Budget
+            </span>
+            <span className="text-neutral-600">→</span>
+            <span className="text-rose-400 flex items-center gap-1">
+              <span className="w-4 h-4 rounded-full bg-rose-500/20 text-rose-300 inline-flex items-center justify-center text-[10px] font-bold">5</span>
+              Send Request
+            </span>
+          </div>
+        </div>
+
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {errorMessage && (
@@ -245,16 +275,19 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             />
           </div>
 
-          {/* Booking Protection Notice */}
-          <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5 text-[11px] text-neutral-400">
+          {/* Booking Protection Notice & Flow Disclaimer */}
+          <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2 text-[11px] text-neutral-400">
             <div className="flex items-center gap-2 text-rose-400 font-bold">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>CreatorFlow Booking Protection</span>
+              <span>How Booking Works</span>
             </div>
-            <ul className="list-disc list-inside space-y-0.5 text-neutral-400 pl-1">
-              <li>Direct calendar scheduling &amp; verified appointment lock</li>
-              <li>Dedicated cloud workspace for raw footage &amp; deliverable files</li>
-              <li>Protected payment escrow with milestone delivery releases</li>
+            <p className="text-neutral-300 leading-relaxed">
+              Submitting sends a direct booking request to {creator.displayName}. The creator reviews your event date and scope, then confirms availability before any payment or commitment.
+            </p>
+            <ul className="list-disc list-inside space-y-0.5 text-neutral-400 pl-1 pt-1 border-t border-neutral-900">
+              <li>Direct calendar appointment lock &amp; scheduling</li>
+              <li>Dedicated cloud workspace for raw footage &amp; final deliverables</li>
+              <li>Milestone delivery protection for your peace of mind</li>
             </ul>
           </div>
 
@@ -262,7 +295,9 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           <div className="pt-2 flex items-center justify-between">
             <div className="text-left">
               <span className="text-[10px] text-neutral-500 uppercase tracking-wider block">Estimated Total</span>
-              <span className="text-xl font-extrabold text-white font-['Space_Grotesk']">${budget}</span>
+              <span className="text-xl font-extrabold text-white font-['Space_Grotesk']">
+                ৳{Number(budget).toLocaleString()} <span className="text-xs text-neutral-400 font-normal">BDT</span>
+              </span>
             </div>
 
             <div className="flex gap-2">
@@ -286,7 +321,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   </>
                 ) : (
                   <>
-                    <span>Submit Booking Request</span>
+                    <span>Send Booking Request</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </>
                 )}

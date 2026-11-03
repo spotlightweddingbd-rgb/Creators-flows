@@ -17,6 +17,7 @@ import {
   NotificationItem,
   ApiResponse,
   AuthSession,
+  GuestInquiryRecord,
 } from '../types';
 import {
   MOCK_USERS,
@@ -52,6 +53,7 @@ const STORAGE_KEYS = {
   DEMO_MESSAGES: 'creatorflow_demo_messages',
   DEMO_REVIEWS: 'creatorflow_demo_reviews',
   DEMO_NOTIFICATIONS: 'creatorflow_demo_notifications',
+  GUEST_INQUIRIES: 'creatorflow_guest_inquiries',
 };
 
 export function getAppsScriptUrl(): string {
@@ -116,7 +118,7 @@ async function callAppsScript<T = any>(
     if (method === 'GET') {
       const url = new URL(apiUrl);
       url.searchParams.set('action', action);
-      if (token) url.searchParams.set('token', token);
+      // Tokens must never be placed in GET URL query parameters (security rule)
       if (params) {
         Object.keys(params).forEach((k) => {
           if (params[k] !== undefined && params[k] !== null) {
@@ -238,6 +240,39 @@ export function clearSession(): void {
   localStorage.removeItem(STORAGE_KEYS.CURRENT_CREATOR);
 }
 
+export async function validateSession(): Promise<AuthSession | null> {
+  if (typeof window === 'undefined') return null;
+  const token = localStorage.getItem(STORAGE_KEYS.SESSION_TOKEN);
+  if (!token) return null;
+
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript('POST', 'validateSession', {});
+      if (res.success && res.data && res.data.user) {
+        saveSession(token, res.data.user, res.data.creator || undefined);
+        return {
+          token,
+          user: res.data.user,
+          creator: res.data.creator || undefined,
+        };
+      }
+      clearSession();
+      return null;
+    } catch (e) {
+      clearSession();
+      return null;
+    }
+  }
+
+  // Demo fallback mode (only when no Apps Script URL is configured)
+  const stored = getStoredSession();
+  if (stored && stored.token === token) {
+    return stored;
+  }
+  clearSession();
+  return null;
+}
+
 export async function login(email: string, password: string): Promise<AuthSession> {
   const normEmail = email.trim().toLowerCase();
 
@@ -246,25 +281,26 @@ export async function login(email: string, password: string): Promise<AuthSessio
       const res = await callAppsScript('POST', 'login', { email: normEmail, password });
       if (res.success && res.data) {
         saveSession(res.data.sessionToken, res.data.user, res.data.creatorProfile);
+        linkGuestInquiriesToUser(res.data.user);
         return {
           token: res.data.sessionToken,
           user: res.data.user,
           creator: res.data.creatorProfile,
         };
       }
-      throw new Error(res.message || 'Login failed');
+      throw new Error(res.message || 'Incorrect email or password.');
     } catch (err: any) {
-      // If server error, fallback to demo user check if exists
-      console.warn('Apps Script login failed, testing demo fallback...');
+      // In live backend mode, NEVER silently switch to fake demo accounts.
+      throw new Error(err.message || 'Incorrect email or password.');
     }
   }
 
-  // Demo Fallback Login
+  // Demo Fallback Login (Only when NO Apps Script backend is configured)
   const users = getLocalDemoState<User[]>(STORAGE_KEYS.DEMO_USERS, MOCK_USERS);
   const user = users.find((u) => u.email.toLowerCase() === normEmail);
 
   if (!user) {
-    throw new Error('Incorrect email or password. (Demo: try fardin.cinematics@gmail.com or elena.client@outlook.com)');
+    throw new Error('Incorrect email or password.');
   }
 
   const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
@@ -272,6 +308,7 @@ export async function login(email: string, password: string): Promise<AuthSessio
   const token = 'DEMO-TOKEN-' + user.userId;
 
   saveSession(token, user, creator);
+  linkGuestInquiriesToUser(user);
   return { token, user, creator };
 }
 
@@ -297,11 +334,12 @@ export async function registerCustomer(data: {
       const res = await callAppsScript('POST', 'registerCustomer', data);
       if (res.success && res.data) {
         saveSession(res.data.sessionToken, res.data.user);
+        linkGuestInquiriesToUser(res.data.user);
         return { token: res.data.sessionToken, user: res.data.user };
       }
       throw new Error(res.message || 'Registration failed');
     } catch (e: any) {
-      console.warn('Backend register failed, trying fallback:', e);
+      throw new Error(e.message || 'Registration failed');
     }
   }
 
@@ -329,6 +367,7 @@ export async function registerCustomer(data: {
   setLocalDemoState(STORAGE_KEYS.DEMO_USERS, updatedUsers);
   const token = `DEMO-TOKEN-${userId}`;
   saveSession(token, newUser);
+  linkGuestInquiriesToUser(newUser);
 
   return { token, user: newUser };
 }
@@ -427,7 +466,7 @@ export async function registerCreator(data: CreatorRegistrationPayload): Promise
       }
       throw new Error(res.message || 'Creator registration failed');
     } catch (e: any) {
-      console.warn('Backend registerCreator failed, trying fallback:', e);
+      throw new Error(e.message || 'Creator registration failed');
     }
   }
 
@@ -572,6 +611,7 @@ export async function registerCreator(data: CreatorRegistrationPayload): Promise
 
   const token = `DEMO-TOKEN-${userId}`;
   saveSession(token, newUser, newCreator);
+  linkGuestInquiriesToUser(newUser);
   return { token, user: newUser, creator: newCreator };
 }
 
@@ -585,8 +625,10 @@ export async function getCreators(filters?: {
   query?: string;
   sortBy?: string;
   verifiedOnly?: boolean;
+  featuredOnly?: boolean;
   minRating?: number;
   priceRange?: string;
+  availability?: string;
 }): Promise<Creator[]> {
   if (isLiveBackendConfigured()) {
     try {
@@ -601,8 +643,16 @@ export async function getCreators(filters?: {
         if (filters?.verifiedOnly) {
           liveList = liveList.filter((c) => c.verified);
         }
+        if (filters?.featuredOnly) {
+          liveList = liveList.filter((c) => c.featured);
+        }
         if (filters?.minRating) {
           liveList = liveList.filter((c) => c.rating >= filters.minRating!);
+        }
+        if (filters?.availability && filters.availability !== 'all') {
+          liveList = liveList.filter(
+            (c) => (c.availabilityStatus || 'Available').toLowerCase() === filters.availability!.toLowerCase()
+          );
         }
         if (filters?.priceRange) {
           if (filters.priceRange === 'under_20k') {
@@ -615,8 +665,10 @@ export async function getCreators(filters?: {
         }
         return liveList;
       }
+      return [];
     } catch (e) {
-      console.warn('Apps Script getCreators failed, using demo fallback');
+      console.warn('Apps Script getCreators error:', e);
+      return [];
     }
   }
 
@@ -649,6 +701,16 @@ export async function getCreators(filters?: {
 
   if (filters?.verifiedOnly) {
     list = list.filter((c) => c.verified);
+  }
+
+  if (filters?.featuredOnly) {
+    list = list.filter((c) => c.featured);
+  }
+
+  if (filters?.availability && filters.availability !== 'all') {
+    list = list.filter(
+      (c) => (c.availabilityStatus || 'Available').toLowerCase() === filters.availability!.toLowerCase()
+    );
   }
 
   if (filters?.minRating && filters.minRating > 0) {
@@ -690,9 +752,35 @@ export async function getCreators(filters?: {
 
   return list.map((c) => ({
     ...c,
+    availabilityStatus: c.availabilityStatus || 'Available',
     profileImageUrl: normalizeGoogleDriveImageUrl(c.profileImageUrl, 800),
     coverImageUrl: c.coverImageUrl ? normalizeGoogleDriveImageUrl(c.coverImageUrl, 1600) : '',
   }));
+}
+
+export function getSavedCreatorIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem('creatorflow_saved_creators');
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function toggleSaveCreatorId(creatorId: string): string[] {
+  if (typeof window === 'undefined') return [];
+  const current = getSavedCreatorIds();
+  const next = current.includes(creatorId)
+    ? current.filter((id) => id !== creatorId)
+    : [...current, creatorId];
+  try {
+    localStorage.setItem('creatorflow_saved_creators', JSON.stringify(next));
+  } catch (e) {}
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('creatorflow:saved-updated', { detail: next }));
+  }
+  return next;
 }
 
 export async function getCreatorProfile(usernameOrId: string): Promise<{
@@ -769,8 +857,8 @@ export function syncLocalSessionWithCreatorUpdate(updatedCreator: Creator): void
     const userRaw = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
     if (userRaw) {
       const user: User = JSON.parse(userRaw);
-      if (normalizedCreator.profileImageUrl) {
-        user.profileImage = normalizedCreator.profileImageUrl;
+      if (normalizedCreator.profileImageUrl !== undefined) {
+        user.profileImage = normalizedCreator.profileImageUrl || '';
       }
       if (normalizedCreator.displayName) {
         user.fullName = normalizedCreator.displayName;
@@ -1275,21 +1363,218 @@ export async function updateProjectStatus(projectId: string, status: Project['st
 // ----------------------------------------------------
 // Messages
 // ----------------------------------------------------
+// ----------------------------------------------------
+// Guest Inquiries & Messaging
+// ----------------------------------------------------
+export function getGuestStoredConversations(): GuestInquiryRecord[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.GUEST_INQUIRIES);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveGuestConversation(record: GuestInquiryRecord): void {
+  if (typeof window === 'undefined') return;
+  const current = getGuestStoredConversations();
+  const existingIdx = current.findIndex((c) => c.conversationId === record.conversationId);
+  if (existingIdx >= 0) {
+    current[existingIdx] = { ...current[existingIdx], ...record };
+  } else {
+    current.unshift(record);
+  }
+  try {
+    localStorage.setItem(STORAGE_KEYS.GUEST_INQUIRIES, JSON.stringify(current));
+  } catch (e) {
+    console.error('Storage error saving guest inquiry', e);
+  }
+}
+
+export async function sendGuestMessage(data: {
+  creatorId: string;
+  guestName: string;
+  guestEmail: string;
+  guestPhone?: string;
+  message: string;
+  conversationId?: string;
+  guestAccessToken?: string;
+}): Promise<{
+  conversationId: string;
+  guestAccessToken: string;
+  message: Message;
+}> {
+  const normEmail = data.guestEmail.trim().toLowerCase();
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const creator = creators.find((c) => c.creatorId === data.creatorId);
+
+  // If live backend configured, call Apps Script
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<{
+        conversationId: string;
+        guestAccessToken: string;
+        message: Message;
+      }>('POST', 'sendGuestInquiry', {
+        ...data,
+        guestEmail: normEmail,
+      });
+      if (res.success && res.data) {
+        saveGuestConversation({
+          conversationId: res.data.conversationId,
+          guestAccessToken: res.data.guestAccessToken,
+          creatorId: data.creatorId,
+          creatorName: creator?.displayName || 'Creator',
+          guestName: data.guestName,
+          guestEmail: normEmail,
+          guestPhone: data.guestPhone,
+          lastMessageAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+        });
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script sendGuestInquiry failed, falling back to local storage:', e);
+    }
+  }
+
+  // Local fallback storage
+  const convId =
+    data.conversationId ||
+    `GUEST-CONV-${data.creatorId.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now().toString(36)}`;
+
+  const token =
+    data.guestAccessToken ||
+    `GUEST_TK_${Math.random().toString(36).substring(2)}${Date.now().toString(36)}`;
+
+  const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  const newMsgId = `MSG-GUEST-${String(messages.length + 1).padStart(6, '0')}`;
+
+  const newMsg: Message = {
+    messageId: newMsgId,
+    conversationId: convId,
+    senderId: `guest_${convId}`,
+    receiverId: creator ? creator.userId : 'unknown_creator',
+    message: data.message,
+    isRead: false,
+    createdAt: new Date().toISOString(),
+    isGuest: true,
+    guestName: data.guestName,
+    guestEmail: normEmail,
+    guestPhone: data.guestPhone,
+  };
+
+  setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, [...messages, newMsg]);
+
+  // Persist guest conversation record
+  saveGuestConversation({
+    conversationId: convId,
+    guestAccessToken: token,
+    creatorId: data.creatorId,
+    creatorName: creator?.displayName || 'Creator',
+    guestName: data.guestName,
+    guestEmail: normEmail,
+    guestPhone: data.guestPhone,
+    lastMessageAt: newMsg.createdAt,
+    createdAt: new Date().toISOString(),
+  });
+
+  // If creator exists, trigger an in-app notification for the creator
+  if (creator) {
+    const notifs = getLocalDemoState<NotificationItem[]>(STORAGE_KEYS.DEMO_NOTIFICATIONS, MOCK_NOTIFICATIONS);
+    const newNotif: NotificationItem = {
+      notificationId: `NOTIF-${Date.now()}`,
+      userId: creator.userId,
+      title: `Guest Inquiry from ${data.guestName}`,
+      message: `"${data.message.substring(0, 80)}${data.message.length > 80 ? '...' : ''}"`,
+      type: 'message',
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      linkUrl: '/creator/messages',
+    };
+    setLocalDemoState(STORAGE_KEYS.DEMO_NOTIFICATIONS, [newNotif, ...notifs]);
+  }
+
+  return {
+    conversationId: convId,
+    guestAccessToken: token,
+    message: newMsg,
+  };
+}
+
+export async function getGuestMessages(
+  conversationId: string,
+  guestAccessToken?: string
+): Promise<Message[]> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Message[]>('GET', 'getGuestMessages', undefined, {
+        conversationId,
+        guestAccessToken: guestAccessToken || '',
+      });
+      if (res.success && Array.isArray(res.data)) return res.data;
+    } catch (e) {}
+  }
+
+  const all = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  return all
+    .filter((m) => m.conversationId === conversationId)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+// Helper to link previous guest inquiries when a user logs in or registers
+export function linkGuestInquiriesToUser(user: User): void {
+  if (typeof window === 'undefined' || !user.email) return;
+  const normEmail = user.email.trim().toLowerCase();
+  const guestInquiries = getGuestStoredConversations();
+  const matchingInquiries = guestInquiries.filter(
+    (inq) => inq.guestEmail && inq.guestEmail.trim().toLowerCase() === normEmail
+  );
+
+  if (matchingInquiries.length === 0) return;
+
+  const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  let updatedAny = false;
+
+  const matchingConvIds = new Set(matchingInquiries.map((inq) => inq.conversationId));
+  const updatedMessages = messages.map((m) => {
+    if (matchingConvIds.has(m.conversationId) && m.isGuest) {
+      updatedAny = true;
+      return {
+        ...m,
+        senderId: user.userId, // Map to authenticated user ID
+      };
+    }
+    return m;
+  });
+
+  if (updatedAny) {
+    setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, updatedMessages);
+  }
+}
+
+// ----------------------------------------------------
+// Messages (Authenticated & Guest Inquiries)
+// ----------------------------------------------------
 export async function getConversations(): Promise<any[]> {
   const session = getStoredSession();
   if (!session) return [];
 
   if (isLiveBackendConfigured()) {
     try {
-      const res = await callAppsScript('GET', 'getConversations');
+      const res = await callAppsScript('POST', 'getConversations');
       if (res.success && Array.isArray(res.data)) return res.data;
     } catch (e) {}
   }
 
   const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
   const users = getLocalDemoState<User[]>(STORAGE_KEYS.DEMO_USERS, MOCK_USERS);
+  const guestInquiries = getGuestStoredConversations();
 
   const convMap: Record<string, any> = {};
+
+  // 1. Process regular user-to-user and linked messages
   for (const m of messages) {
     if (m.senderId === session.user.userId || m.receiverId === session.user.userId) {
       const otherId = m.senderId === session.user.userId ? m.receiverId : m.senderId;
@@ -1299,13 +1584,46 @@ export async function getConversations(): Promise<any[]> {
         convMap[convId] = {
           conversationId: convId,
           otherUserId: otherId,
-          otherUserName: otherUser?.fullName || 'Creative Partner',
+          otherUserName: m.guestName || otherUser?.fullName || 'Creative Partner',
           otherUserImage: otherUser?.profileImage || '',
           lastMessage: m.message,
           lastMessageAt: m.createdAt,
           unreadCount: m.receiverId === session.user.userId && !m.isRead ? 1 : 0,
+          isGuest: Boolean(m.isGuest),
+          guestEmail: m.guestEmail,
+          guestPhone: m.guestPhone,
         };
       }
+    }
+  }
+
+  // 2. If current user is a creator, ensure all guest inquiries directed to this creator appear
+  if (session.creator || session.user.accountType === 'creator') {
+    const creatorId = session.creator?.creatorId;
+    const relevantInquiries = guestInquiries.filter(
+      (inq) => !creatorId || inq.creatorId === creatorId
+    );
+
+    for (const inq of relevantInquiries) {
+      const inqMsgs = messages
+        .filter((m) => m.conversationId === inq.conversationId)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      const latestMsg = inqMsgs.length > 0 ? inqMsgs[inqMsgs.length - 1] : null;
+      const hasUnread = inqMsgs.some((m) => m.senderId !== session.user.userId && !m.isRead);
+
+      convMap[inq.conversationId] = {
+        conversationId: inq.conversationId,
+        otherUserId: `guest_${inq.conversationId}`,
+        otherUserName: inq.guestName || 'Guest Client',
+        otherUserImage: '',
+        lastMessage: latestMsg ? latestMsg.message : 'Guest project inquiry',
+        lastMessageAt: latestMsg ? latestMsg.createdAt : inq.lastMessageAt || inq.createdAt,
+        unreadCount: hasUnread ? 1 : 0,
+        isGuest: true,
+        guestEmail: inq.guestEmail,
+        guestPhone: inq.guestPhone,
+      };
     }
   }
 
@@ -1351,6 +1669,8 @@ export async function sendMessage(data: {
 
   const all = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
   const convId = data.conversationId || `CONV-${[session.user.userId, data.receiverId].sort().join('-')}`;
+  const isGuestConv = convId.startsWith('GUEST-CONV-');
+
   const newMsg: Message = {
     messageId: `MSG-${String(all.length + 1).padStart(6, '0')}`,
     conversationId: convId,
@@ -1365,6 +1685,19 @@ export async function sendMessage(data: {
   };
 
   setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, [...all, newMsg]);
+
+  // If this was a reply to a guest inquiry, update the guest conversation timestamp
+  if (isGuestConv) {
+    const guestInquiries = getGuestStoredConversations();
+    const targetIdx = guestInquiries.findIndex((c) => c.conversationId === convId);
+    if (targetIdx >= 0) {
+      guestInquiries[targetIdx].lastMessageAt = newMsg.createdAt;
+      try {
+        localStorage.setItem(STORAGE_KEYS.GUEST_INQUIRIES, JSON.stringify(guestInquiries));
+      } catch (e) {}
+    }
+  }
+
   return newMsg;
 }
 
@@ -1537,7 +1870,7 @@ export async function uploadBase64File(data: {
 export async function adminGetDashboard(): Promise<any> {
   if (isLiveBackendConfigured()) {
     try {
-      const res = await callAppsScript('GET', 'adminGetDashboard');
+      const res = await callAppsScript('POST', 'adminGetDashboard');
       if (res.success && res.data) return res.data;
     } catch (e) {}
   }
@@ -1565,12 +1898,83 @@ export async function adminVerifyCreator(creatorId: string, verified: boolean): 
   if (isLiveBackendConfigured()) {
     try {
       const res = await callAppsScript('POST', 'adminVerifyCreator', { creatorId, verified });
-      if (res.success && res.data) return res.data;
+      if (res.success && res.data) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('creatorflow:creators-updated'));
+        }
+        return res.data;
+      }
     } catch (e) {}
   }
 
   const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
   const updated = creators.map((c) => (c.creatorId === creatorId ? { ...c, verified } : c));
   setLocalDemoState(STORAGE_KEYS.DEMO_CREATORS, updated);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('creatorflow:creators-updated'));
+  }
   return updated.find((c) => c.creatorId === creatorId)!;
 }
+
+export async function adminSetFeaturedCreator(creatorId: string, featured: boolean): Promise<Creator> {
+  const session = getStoredSession();
+  const isAdminOrStaff =
+    session?.user?.accountType === 'admin' ||
+    session?.user?.accountType === 'staff' ||
+    (session?.user as any)?.role === 'admin' ||
+    (session?.user as any)?.role === 'staff';
+
+  if (!session || !isAdminOrStaff) {
+    throw new Error('UNAUTHORIZED: Only SpotlightPhotography Mother Admin or authorized staff can manage featured creators.');
+  }
+
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript('POST', 'adminSetFeaturedCreator', { creatorId, featured });
+      if (res.success && res.data) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('creatorflow:creators-updated'));
+        }
+        return res.data;
+      }
+    } catch (e: any) {
+      console.warn('Apps Script adminSetFeaturedCreator failed, fallback to local storage:', e);
+    }
+  }
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const target = creators.find((c) => c.creatorId === creatorId);
+  if (!target) throw new Error('NOT_FOUND: Creator does not exist');
+
+  const updated: Creator = {
+    ...target,
+    featured,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const updatedCreators = creators.map((c) => (c.creatorId === creatorId ? updated : c));
+  setLocalDemoState(STORAGE_KEYS.DEMO_CREATORS, updatedCreators);
+
+  // If newly featured, trigger system notification for the freelancer
+  if (featured) {
+    const notifs = getLocalDemoState<NotificationItem[]>(STORAGE_KEYS.DEMO_NOTIFICATIONS, MOCK_NOTIFICATIONS);
+    const newNotif: NotificationItem = {
+      notificationId: `NOTIF-${Date.now()}`,
+      userId: target.userId,
+      title: "You’re Featured!",
+      message: "Your profile has been selected by SpotlightPhotography to appear in Featured Freelancers.",
+      type: 'system',
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      linkUrl: `/creator/${target.username}`,
+    };
+    setLocalDemoState(STORAGE_KEYS.DEMO_NOTIFICATIONS, [newNotif, ...notifs]);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('creatorflow:creators-updated'));
+  }
+
+  return updated;
+}
+

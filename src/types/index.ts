@@ -47,6 +47,7 @@ export interface Creator {
   featured: boolean;
   rating: number;
   reviewCount: number;
+  availabilityStatus?: 'Available' | 'Limited' | 'Busy' | 'Unavailable';
   driveRootFolderId?: string;
   driveRootFolderUrl?: string;
   onboardingCompleted: boolean;
@@ -201,6 +202,22 @@ export interface Message {
   attachmentFileId?: string;
   attachmentUrl?: string;
   isRead: boolean;
+  createdAt: string;
+  isGuest?: boolean;
+  guestName?: string;
+  guestEmail?: string;
+  guestPhone?: string;
+}
+
+export interface GuestInquiryRecord {
+  conversationId: string;
+  guestAccessToken: string;
+  creatorId: string;
+  creatorName?: string;
+  guestName: string;
+  guestEmail: string;
+  guestPhone?: string;
+  lastMessageAt: string;
   createdAt: string;
 }
 

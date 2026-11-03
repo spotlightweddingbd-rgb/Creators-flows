@@ -75,10 +75,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </span>
           </button>
           <h1 className="text-2xl font-bold text-white font-['Space_Grotesk'] tracking-tight">
-            Sign In to Your Workspace
+            Welcome Back
           </h1>
           <p className="text-xs text-neutral-400">
-            Access your bookings, messaging, project files, and portfolio settings.
+            Sign in to manage your bookings, projects, messages or creator workspace.
           </p>
         </div>
 

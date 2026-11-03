@@ -25,6 +25,14 @@ import {
   Users,
   MapPin,
   X,
+  Layers,
+  Compass,
+  Sliders,
+  LayoutGrid,
+  List as ListIcon,
+  Heart,
+  Bookmark,
+  MessageSquare,
 } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { CreatorCard } from './components/CreatorCard';
@@ -35,6 +43,9 @@ import { AuthModal } from './components/AuthModal';
 import { DevBackendView } from './components/DevBackendView';
 import { RegisterPage } from './components/RegisterPage';
 import { LoginPage } from './components/LoginPage';
+import { GuestMessageModal } from './components/GuestMessageModal';
+import { BookingAuthGateModal } from './components/BookingAuthGateModal';
+import { FeaturedFreelancersMarquee } from './components/FeaturedFreelancersMarquee';
 import { SafeAvatar, SafeCover } from './utils/imageUtils';
 import {
   Creator,
@@ -54,18 +65,22 @@ import {
   getStoredSession,
   getNotifications,
   syncLocalSessionWithCreatorUpdate,
+  validateSession,
+  isLiveBackendConfigured,
+  getSavedCreatorIds,
+  toggleSaveCreatorId,
 } from './services/api';
 import { MOCK_CREATORS } from './data/mockData';
 
 export const ROLE_CATEGORIES = [
-  { id: 'all', label: 'All' },
-  { id: 'photographer', label: 'Photographer' },
-  { id: 'cinematographer', label: 'Cinematographer' },
-  { id: 'videographer', label: 'Videographer' },
-  { id: 'video_editor', label: 'Video Editor' },
-  { id: 'photo_editor', label: 'Photo Editor' },
-  { id: 'drone', label: 'Drone Operator' },
-  { id: 'designer', label: 'Graphic Designer' },
+  { id: 'all', label: 'All', icon: Layers },
+  { id: 'photographer', label: 'Photographer', icon: Camera },
+  { id: 'cinematographer', label: 'Cinematographer', icon: Film },
+  { id: 'videographer', label: 'Videographer', icon: Video },
+  { id: 'video_editor', label: 'Video Editor', icon: Scissors },
+  { id: 'photo_editor', label: 'Photo Editor', icon: Sliders },
+  { id: 'drone', label: 'Drone Operator', icon: Compass },
+  { id: 'designer', label: 'Graphic Designer', icon: Palette },
 ];
 
 type ViewMode =
@@ -94,10 +109,15 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRole, setSelectedRole] = useState('all');
   const [selectedCity, setSelectedCity] = useState('all');
+  const [selectedAvailability, setSelectedAvailability] = useState('all');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [featuredOnly, setFeaturedOnly] = useState(false);
+  const [savedOnly, setSavedOnly] = useState(false);
   const [minRating, setMinRating] = useState(0);
   const [priceRange, setPriceRange] = useState('all');
   const [sortBy, setSortBy] = useState('rating');
+  const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid');
+  const [savedCreatorIds, setSavedCreatorIds] = useState<string[]>([]);
   const [isLoadingCreators, setIsLoadingCreators] = useState(false);
 
   // Views & Routing State
@@ -111,6 +131,15 @@ export default function App() {
   const [authModalMode, setAuthModalMode] = useState<'login' | 'registerCustomer' | 'registerCreator'>('login');
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [bookingToast, setBookingToast] = useState<string | null>(null);
+
+  // Guest messaging and booking authentication gate state
+  const [guestMessageCreator, setGuestMessageCreator] = useState<Creator | null>(null);
+  const [isGuestMessageModalOpen, setIsGuestMessageModalOpen] = useState(false);
+  const [isBookingAuthGateOpen, setIsBookingAuthGateOpen] = useState(false);
+  const [pendingBookingIntent, setPendingBookingIntent] = useState<{
+    creator: Creator;
+    pkg?: PackageItem;
+  } | null>(null);
 
   // View creator public profile by username
   const handleViewCreatorProfile = async (username: string) => {
@@ -263,17 +292,32 @@ export default function App() {
     window.addEventListener('hashchange', syncFromUrl);
     window.addEventListener('popstate', syncFromUrl);
 
-    // Read stored session (anonymous visitors stay logged out)
-    const stored = getStoredSession();
-    if (stored) {
-      setSession(stored);
-    }
+    // Read stored session and validate with backend
+    const initSession = async () => {
+      const stored = getStoredSession();
+      if (!stored) return;
+      try {
+        const validated = await validateSession();
+        if (validated) {
+          setSession(validated);
+        } else {
+          setSession(null);
+        }
+      } catch (e) {
+        setSession(null);
+      }
+    };
+    initSession();
 
     const handleSessionUpdated = () => {
       const s = getStoredSession();
       if (s) setSession(s);
     };
+    const handleCreatorsUpdated = () => {
+      loadCreatorsList();
+    };
     window.addEventListener('creatorflow:session-updated', handleSessionUpdated);
+    window.addEventListener('creatorflow:creators-updated', handleCreatorsUpdated);
 
     loadCreatorsList();
 
@@ -281,6 +325,7 @@ export default function App() {
       window.removeEventListener('hashchange', syncFromUrl);
       window.removeEventListener('popstate', syncFromUrl);
       window.removeEventListener('creatorflow:session-updated', handleSessionUpdated);
+      window.removeEventListener('creatorflow:creators-updated', handleCreatorsUpdated);
     };
   }, []);
 
@@ -290,21 +335,56 @@ export default function App() {
     }
   }, [session]);
 
+  useEffect(() => {
+    setSavedCreatorIds(getSavedCreatorIds());
+    const handleSavedUpdated = (e: any) => {
+      setSavedCreatorIds(e.detail || getSavedCreatorIds());
+    };
+    window.addEventListener('creatorflow:saved-updated', handleSavedUpdated);
+    return () => {
+      window.removeEventListener('creatorflow:saved-updated', handleSavedUpdated);
+    };
+  }, []);
+
+  const handleToggleSave = (creator: Creator) => {
+    if (!session) {
+      setAuthModalMode('login');
+      setIsAuthModalOpen(true);
+      return;
+    }
+    const updated = toggleSaveCreatorId(creator.creatorId);
+    setSavedCreatorIds(updated);
+  };
+
   const loadCreatorsList = async () => {
     setIsLoadingCreators(true);
     try {
-      const list = await getCreators({
+      let list = await getCreators({
         role: selectedRole,
         city: selectedCity,
         query: searchQuery,
         sortBy,
         verifiedOnly,
+        featuredOnly,
+        availability: selectedAvailability,
         minRating,
         priceRange,
       });
+      if (savedOnly) {
+        const savedIds = getSavedCreatorIds();
+        list = list.filter((c) => savedIds.includes(c.creatorId));
+      }
       setCreators(list);
     } catch (e) {
-      setCreators(MOCK_CREATORS);
+      const fallback = isLiveBackendConfigured() ? [] : MOCK_CREATORS;
+      let list = fallback;
+      if (featuredOnly) list = list.filter((c) => c.featured);
+      if (verifiedOnly) list = list.filter((c) => c.verified);
+      if (savedOnly) {
+        const savedIds = getSavedCreatorIds();
+        list = list.filter((c) => savedIds.includes(c.creatorId));
+      }
+      setCreators(list);
     } finally {
       setIsLoadingCreators(false);
     }
@@ -312,7 +392,7 @@ export default function App() {
 
   useEffect(() => {
     loadCreatorsList();
-  }, [selectedRole, selectedCity, sortBy, verifiedOnly, minRating, priceRange]);
+  }, [selectedRole, selectedCity, selectedAvailability, sortBy, verifiedOnly, featuredOnly, savedOnly, minRating, priceRange]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -337,9 +417,19 @@ export default function App() {
   };
 
   const handleStartBooking = (creator: Creator, pkg?: PackageItem) => {
+    if (!session) {
+      setPendingBookingIntent({ creator, pkg });
+      setIsBookingAuthGateOpen(true);
+      return;
+    }
     setBookingCreator(creator);
     setBookingPackage(pkg || null);
     setIsBookingModalOpen(true);
+  };
+
+  const handleMessageCreator = (creator: Creator) => {
+    setGuestMessageCreator(creator);
+    setIsGuestMessageModalOpen(true);
   };
 
   const handleBookingSuccess = (booking: Booking) => {
@@ -382,7 +472,16 @@ export default function App() {
             onSuccess={(newSession, targetPath) => {
               setSession(newSession);
               getNotifications().then((n) => setNotifications(n)).catch(() => {});
-              navigate('dashboard', { tab: 'overview' });
+              if (pendingBookingIntent) {
+                const intent = pendingBookingIntent;
+                setPendingBookingIntent(null);
+                handleViewCreatorProfile(intent.creator.username);
+                setBookingCreator(intent.creator);
+                setBookingPackage(intent.pkg || null);
+                setIsBookingModalOpen(true);
+              } else {
+                navigate('dashboard', { tab: 'overview' });
+              }
             }}
             onNavigateLogin={() => navigate('login')}
             onNavigateHome={() => navigate('explore')}
@@ -414,7 +513,16 @@ export default function App() {
             onSuccess={(newSession) => {
               setSession(newSession);
               getNotifications().then((n) => setNotifications(n)).catch(() => {});
-              navigate('dashboard', { tab: 'overview' });
+              if (pendingBookingIntent) {
+                const intent = pendingBookingIntent;
+                setPendingBookingIntent(null);
+                handleViewCreatorProfile(intent.creator.username);
+                setBookingCreator(intent.creator);
+                setBookingPackage(intent.pkg || null);
+                setIsBookingModalOpen(true);
+              } else {
+                navigate('dashboard', { tab: 'overview' });
+              }
             }}
             onNavigateRegister={(role) => navigate('register', { role })}
             onNavigateHome={() => navigate('explore')}
@@ -425,17 +533,38 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-['Plus_Jakarta_Sans'] selection:bg-rose-500 selection:text-white">
-      {/* Navigation */}
+    <div className="min-h-screen bg-[#0B0D12] text-white flex flex-col font-['Plus_Jakarta_Sans'] selection:bg-rose-500 selection:text-white">
+      {/* 1. NAVBAR */}
       <Navbar
         session={session}
         notifications={notifications}
+        savedCount={savedCreatorIds.length}
+        onOpenSaved={() => {
+          setSavedOnly(true);
+          const gridEl = document.getElementById('all-freelancers-grid-section');
+          if (gridEl) {
+            gridEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }}
         onOpenAuth={(mode = 'login') => navigate(mode === 'login' ? 'login' : 'register')}
         onOpenDashboard={(tab = 'bookings') => navigate('dashboard', { tab })}
         onSelectCreator={handleViewCreatorProfile}
-        onGoHome={() => navigate('explore')}
-        onNavigateExplore={() => navigate('explore')}
-        onNavigateHowItWorks={() => navigate('how-it-works')}
+        onGoHome={() => {
+          setSavedOnly(false);
+          navigate('explore');
+        }}
+        onNavigateExplore={() => {
+          setSavedOnly(false);
+          navigate('explore');
+        }}
+        onNavigateHowItWorks={() => {
+          const el = document.getElementById('how-it-works-section');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } else {
+            navigate('how-it-works');
+          }
+        }}
         onNavigateLogin={() => navigate('login')}
         onNavigateRegister={(role) => navigate('register', { role })}
         onViewPublicProfile={handleViewCreatorProfile}
@@ -443,288 +572,457 @@ export default function App() {
 
       {/* Success Toast Notification */}
       {bookingToast && (
-        <div className="fixed bottom-5 right-5 z-50 p-4 rounded-2xl bg-neutral-900 border border-emerald-500/40 text-emerald-300 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-3 max-w-md">
+        <div className="fixed bottom-5 right-5 z-50 p-4 rounded-2xl bg-[#171A22] border border-emerald-500/40 text-emerald-300 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-3 max-w-md">
           <div className="w-8 h-8 rounded-xl bg-emerald-500/20 flex items-center justify-center shrink-0">
             <CheckCircle className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-xs">
             <p className="font-bold text-white">Booking Confirmed</p>
-            <p className="text-neutral-300 mt-0.5">{bookingToast}</p>
+            <p className="text-white/60 mt-0.5">{bookingToast}</p>
           </div>
         </div>
       )}
 
       {/* Main Content Area */}
       <main className="flex-1">
-        {/* VIEW 1: EXPLORE / DIRECTORY & HOMEPAGE */}
-        {/* VIEW: CREATOR MARKETPLACE DIRECT ON ROOT (/) */}
+        {/* VIEW 1: EXPLORE / MAIN MARKETPLACE (/) */}
         {currentView === 'explore' && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8 pb-20">
-            {/* Compact Marketplace Header */}
-            <header className="space-y-4">
-              <div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-white font-['Space_Grotesk'] tracking-tight">
-                  Find Creative Talent
-                </h1>
-                <p className="text-xs sm:text-sm text-neutral-400 mt-1">
-                  Photographers, cinematographers, editors and creative professionals across Bangladesh.
-                </p>
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8 sm:space-y-10 pb-24">
+            {/* 2. HERO / SEARCH SECTION */}
+            <section className="relative rounded-3xl bg-[#11141B] border border-white/[0.08] overflow-hidden p-6 sm:p-10 lg:p-12 shadow-2xl">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+                {/* Left Column: Heading, Eyebrow, Subtext, Real Stats */}
+                <div className="lg:col-span-7 space-y-4 sm:space-y-5">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-white/80 text-xs font-semibold tracking-wide">
+                    <span className="w-2 h-2 rounded-full bg-gradient-to-r from-amber-400 to-rose-500 animate-pulse" />
+                    <span>Independent Creative Talent</span>
+                  </div>
+
+                  <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black text-white font-['Space_Grotesk'] tracking-tight leading-[1.12]">
+                    Find Creative Professionals Across{' '}
+                    <span className="bg-gradient-to-r from-amber-400 via-rose-500 to-pink-500 bg-clip-text text-transparent">
+                      Bangladesh
+                    </span>
+                  </h1>
+
+                  <p className="text-sm sm:text-base text-white/60 max-w-xl leading-relaxed">
+                    Hire photographers, cinematographers, editors and other independent freelancers for your next project.
+                  </p>
+
+                  {/* Real Backend Stats (Genuine numbers only - Rule 29) */}
+                  <div className="pt-2 flex flex-wrap items-center gap-4 sm:gap-6 text-xs text-white/60">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base sm:text-lg font-black text-white font-['Space_Grotesk']">
+                        {creators.length}
+                      </span>
+                      <span className="text-white/50">Creative Freelancers</span>
+                    </div>
+                    <div className="w-1 h-1 rounded-full bg-white/20" />
+                    <div className="flex items-center gap-2">
+                      <span className="text-base sm:text-lg font-black text-sky-400 font-['Space_Grotesk']">
+                        {creators.filter((c) => c.verified).length}
+                      </span>
+                      <span className="text-white/50">Verified Talent</span>
+                    </div>
+                    <div className="w-1 h-1 rounded-full bg-white/20" />
+                    <div className="flex items-center gap-2">
+                      <span className="text-base sm:text-lg font-black text-amber-400 font-['Space_Grotesk']">
+                        {creators.filter((c) => c.featured).length}
+                      </span>
+                      <span className="text-white/50">Featured Curations</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Hero Visual (Cinematic, working outdoors, dark overlay) */}
+                <div className="lg:col-span-5 relative">
+                  <div className="relative rounded-2xl sm:rounded-3xl overflow-hidden aspect-[4/3] sm:aspect-[16/11] border border-white/[0.08] shadow-2xl bg-[#0B0D12]">
+                    <img
+                      src="https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1200&q=80"
+                      alt="Cinematographer operating camera on location"
+                      className="w-full h-full object-cover object-center filter brightness-[0.85] contrast-[1.05]"
+                      loading="lazy"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#11141B] via-[#11141B]/30 to-transparent" />
+
+                    {/* Subtle Live Badge */}
+                    <div className="absolute bottom-4 left-4 right-4 p-3 rounded-2xl bg-[#0B0D12]/80 backdrop-blur-md border border-white/[0.08] flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="text-xs font-semibold text-white">Direct Freelancer Discovery</span>
+                      </div>
+                      <span className="text-[11px] text-white/50 font-mono">SpotlightPhotography</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Immediate Search Bar */}
-              <form
-                onSubmit={handleSearchSubmit}
-                className="relative flex items-center w-full rounded-2xl bg-neutral-900 border border-neutral-800 p-1.5 shadow-xl backdrop-blur-md focus-within:border-neutral-700 transition-colors"
-              >
-                <Search className="w-5 h-5 text-neutral-500 ml-3 shrink-0" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by creator name, style, equipment (e.g. Sony FX6, Drone, Wedding)..."
-                  className="w-full bg-transparent px-3 py-2 text-xs sm:text-sm text-white placeholder-neutral-500 focus:outline-none"
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchQuery('');
-                    }}
-                    className="p-1 rounded-lg text-neutral-500 hover:text-neutral-300 mr-1"
-                    title="Clear search"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-md shadow-rose-500/20 shrink-0 flex items-center gap-1.5"
+              {/* Large Search Bar below hero text */}
+              <div className="pt-6 sm:pt-8 mt-6 sm:mt-8 border-t border-white/[0.08]">
+                <form
+                  onSubmit={handleSearchSubmit}
+                  className="relative flex items-center w-full rounded-2xl bg-[#171A22] border border-white/[0.08] hover:border-white/[0.16] focus-within:border-amber-500/50 p-1.5 sm:p-2 shadow-2xl transition-all"
                 >
-                  <span>Search</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </form>
-
-              {/* Category Role Filter Chips */}
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none text-xs">
-                {ROLE_CATEGORIES.map((role) => (
+                  <Search className="w-5 h-5 text-white/40 ml-3 shrink-0" />
+                  <input
+                    id="marketplace-search-input"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search freelancers by name, role, skill or location (e.g. Wedding, Drone, Dhaka...)"
+                    className="w-full bg-transparent px-3 py-2 text-xs sm:text-sm text-white placeholder-white/40 focus:outline-none"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="p-1 rounded-lg text-white/40 hover:text-white mr-1.5 cursor-pointer"
+                      title="Clear search"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                   <button
-                    key={role.id}
-                    onClick={() => setSelectedRole(role.id)}
-                    className={`px-3.5 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-all ${
-                      selectedRole === role.id
-                        ? 'bg-white text-black shadow-md'
-                        : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800'
-                    }`}
+                    type="submit"
+                    className="px-5 sm:px-7 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-md shadow-rose-500/20 shrink-0 flex items-center gap-1.5 cursor-pointer"
                   >
-                    {role.label}
+                    <span>Search</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
                   </button>
-                ))}
+                </form>
+              </div>
+            </section>
+
+            {/* 3. PRIMARY ROLE FILTERS */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-none">
+                {ROLE_CATEGORIES.map((role) => {
+                  const Icon = role.icon;
+                  const isSelected = selectedRole === role.id;
+                  return (
+                    <button
+                      key={role.id}
+                      type="button"
+                      onClick={() => setSelectedRole(role.id)}
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#171A22] text-white border border-amber-500/60 shadow-md shadow-amber-500/10'
+                          : 'bg-[#171A22] text-white/60 hover:text-white border border-white/[0.08] hover:border-white/[0.16]'
+                      }`}
+                    >
+                      <Icon className={`w-3.5 h-3.5 ${isSelected ? 'text-amber-400' : 'text-white/40'}`} />
+                      <span>{role.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 4. SECONDARY FILTERS */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {/* Location */}
+              <div className="flex items-center gap-1.5 bg-[#171A22] border border-white/[0.08] rounded-xl px-3 h-10">
+                <MapPin className="w-3.5 h-3.5 text-white/40" />
+                <span className="text-white/40">Location:</span>
+                <select
+                  value={selectedCity}
+                  onChange={(e) => setSelectedCity(e.target.value)}
+                  className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer pr-1"
+                >
+                  <option value="all" className="bg-[#171A22]">All Bangladesh</option>
+                  <option value="Dhaka" className="bg-[#171A22]">Dhaka</option>
+                  <option value="Chattogram" className="bg-[#171A22]">Chattogram</option>
+                  <option value="Sylhet" className="bg-[#171A22]">Sylhet</option>
+                  <option value="Rajshahi" className="bg-[#171A22]">Rajshahi</option>
+                  <option value="Khulna" className="bg-[#171A22]">Khulna</option>
+                </select>
               </div>
 
-              {/* Additional Filters & Sort Controls */}
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
-                {/* City Filter */}
-                <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5">
-                  <span className="text-neutral-500">City:</span>
-                  <select
-                    value={selectedCity}
-                    onChange={(e) => setSelectedCity(e.target.value)}
-                    className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer"
-                  >
-                    <option value="all">All Locations</option>
-                    <option value="Dhaka">Dhaka</option>
-                    <option value="Chattogram">Chattogram</option>
-                    <option value="Sylhet">Sylhet</option>
-                    <option value="Rajshahi">Rajshahi</option>
-                    <option value="Khulna">Khulna</option>
-                  </select>
-                </div>
+              {/* Rating */}
+              <div className="flex items-center gap-1.5 bg-[#171A22] border border-white/[0.08] rounded-xl px-3 h-10">
+                <Star className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-white/40">Rating:</span>
+                <select
+                  value={minRating}
+                  onChange={(e) => setMinRating(Number(e.target.value))}
+                  className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer pr-1"
+                >
+                  <option value={0} className="bg-[#171A22]">All Ratings</option>
+                  <option value={4.8} className="bg-[#171A22]">★ 4.8+</option>
+                  <option value={4.5} className="bg-[#171A22]">★ 4.5+</option>
+                  <option value={4.0} className="bg-[#171A22]">★ 4.0+</option>
+                </select>
+              </div>
 
-                {/* Rating Filter */}
-                <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5">
-                  <span className="text-neutral-500">Rating:</span>
-                  <select
-                    value={minRating}
-                    onChange={(e) => setMinRating(Number(e.target.value))}
-                    className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer"
-                  >
-                    <option value={0}>All Ratings</option>
-                    <option value={4.8}>★ 4.8+</option>
-                    <option value={4.5}>★ 4.5+</option>
-                    <option value={4.0}>★ 4.0+</option>
-                  </select>
-                </div>
+              {/* Budget */}
+              <div className="flex items-center gap-1.5 bg-[#171A22] border border-white/[0.08] rounded-xl px-3 h-10">
+                <span className="text-white/40">Budget:</span>
+                <select
+                  value={priceRange}
+                  onChange={(e) => setPriceRange(e.target.value)}
+                  className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer pr-1"
+                >
+                  <option value="all" className="bg-[#171A22]">All Budgets</option>
+                  <option value="under_20k" className="bg-[#171A22]">Under ৳20,000</option>
+                  <option value="20k_40k" className="bg-[#171A22]">৳20,000 - ৳40,000</option>
+                  <option value="above_40k" className="bg-[#171A22]">৳40,000+</option>
+                </select>
+              </div>
 
-                {/* Price Range */}
-                <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5">
-                  <span className="text-neutral-500">Price:</span>
-                  <select
-                    value={priceRange}
-                    onChange={(e) => setPriceRange(e.target.value)}
-                    className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer"
-                  >
-                    <option value="all">All Prices</option>
-                    <option value="under_20k">Under ৳20,000</option>
-                    <option value="20k_40k">৳20,000 - ৳40,000</option>
-                    <option value="above_40k">৳40,000+</option>
-                  </select>
-                </div>
+              {/* Availability */}
+              <div className="flex items-center gap-1.5 bg-[#171A22] border border-white/[0.08] rounded-xl px-3 h-10">
+                <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-white/40">Availability:</span>
+                <select
+                  value={selectedAvailability}
+                  onChange={(e) => setSelectedAvailability(e.target.value)}
+                  className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer pr-1"
+                >
+                  <option value="all" className="bg-[#171A22]">All Statuses</option>
+                  <option value="Available" className="bg-[#171A22]">Available</option>
+                  <option value="Limited" className="bg-[#171A22]">Limited</option>
+                  <option value="Busy" className="bg-[#171A22]">Busy</option>
+                  <option value="Unavailable" className="bg-[#171A22]">Unavailable</option>
+                </select>
+              </div>
 
-                {/* Verified Toggle */}
+              {/* Verified Only */}
+              <button
+                type="button"
+                onClick={() => setVerifiedOnly(!verifiedOnly)}
+                className={`flex items-center gap-1.5 px-3 h-10 rounded-xl border transition-colors cursor-pointer ${
+                  verifiedOnly
+                    ? 'bg-sky-500/10 border-sky-500/40 text-sky-400 font-semibold'
+                    : 'bg-[#171A22] border-white/[0.08] text-white/60 hover:text-white'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Verified Only</span>
+              </button>
+
+              {/* Featured Only */}
+              <button
+                type="button"
+                onClick={() => setFeaturedOnly(!featuredOnly)}
+                className={`flex items-center gap-1.5 px-3 h-10 rounded-xl border transition-colors cursor-pointer ${
+                  featuredOnly
+                    ? 'bg-amber-500/10 border-amber-500/40 text-amber-400 font-semibold'
+                    : 'bg-[#171A22] border-white/[0.08] text-white/60 hover:text-white'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Featured Only</span>
+              </button>
+
+              {/* Saved Only Filter */}
+              {savedCreatorIds.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setVerifiedOnly(!verifiedOnly)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-colors ${
-                    verifiedOnly
-                      ? 'bg-sky-500/10 border-sky-500/40 text-sky-400 font-semibold'
-                      : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
+                  onClick={() => setSavedOnly(!savedOnly)}
+                  className={`flex items-center gap-1.5 px-3 h-10 rounded-xl border transition-colors cursor-pointer ${
+                    savedOnly
+                      ? 'bg-rose-500/10 border-rose-500/40 text-rose-400 font-semibold'
+                      : 'bg-[#171A22] border-white/[0.08] text-white/60 hover:text-white'
                   }`}
                 >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Verified Only</span>
+                  <Heart className={`w-3.5 h-3.5 ${savedOnly ? 'fill-rose-400' : ''}`} />
+                  <span>Saved ({savedCreatorIds.length})</span>
                 </button>
+              )}
 
-                {/* Sort Dropdown */}
-                <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 sm:ml-auto">
-                  <span className="text-neutral-500">Sort:</span>
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                    className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer"
-                  >
-                    <option value="rating">Top Rated</option>
-                    <option value="newest">Newest</option>
-                    <option value="price_asc">Price: Low to High</option>
-                    <option value="price_desc">Price: High to Low</option>
-                  </select>
-                </div>
-
-                {/* Clear all filters button */}
-                {(selectedRole !== 'all' || selectedCity !== 'all' || verifiedOnly || minRating > 0 || priceRange !== 'all' || searchQuery) && (
-                  <button
-                    onClick={() => {
-                      setSelectedRole('all');
-                      setSelectedCity('all');
-                      setSearchQuery('');
-                      setVerifiedOnly(false);
-                      setMinRating(0);
-                      setPriceRange('all');
-                      setSortBy('rating');
-                    }}
-                    className="text-neutral-400 hover:text-white underline underline-offset-2 px-1 py-1 text-xs"
-                  >
-                    Clear all
-                  </button>
-                )}
+              {/* Sort */}
+              <div className="flex items-center gap-1.5 bg-[#171A22] border border-white/[0.08] rounded-xl px-3 h-10 sm:ml-auto">
+                <span className="text-white/40">Sort:</span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="bg-transparent text-white font-semibold focus:outline-none cursor-pointer pr-1"
+                >
+                  <option value="rating" className="bg-[#171A22]">Top Rated</option>
+                  <option value="newest" className="bg-[#171A22]">Newest</option>
+                  <option value="price_asc" className="bg-[#171A22]">Price: Low to High</option>
+                  <option value="price_desc" className="bg-[#171A22]">Price: High to Low</option>
+                </select>
               </div>
-            </header>
 
-            {/* Featured Creators Section */}
-            {creators.some((c) => c.featured) && (
-              <section className="rounded-2xl bg-gradient-to-b from-neutral-900/90 to-neutral-900/40 border border-neutral-800/80 p-4 sm:p-5 shadow-xl">
-                <div className="flex items-center justify-between mb-3.5">
-                  <div className="flex items-center gap-2">
-                    <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
-                      <Sparkles className="w-3.5 h-3.5" />
-                    </div>
-                    <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                      Featured Creators
-                    </h2>
-                    <span className="text-[11px] text-neutral-400 hidden sm:inline">• Top Rated Verified Talent</span>
-                  </div>
-                  <span className="text-[11px] text-neutral-500 font-mono">
-                    {creators.filter((c) => c.featured).length} Featured
-                  </span>
-                </div>
+              {/* Clear All */}
+              {(selectedRole !== 'all' || selectedCity !== 'all' || selectedAvailability !== 'all' || verifiedOnly || featuredOnly || savedOnly || minRating > 0 || priceRange !== 'all' || searchQuery) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRole('all');
+                    setSelectedCity('all');
+                    setSelectedAvailability('all');
+                    setSearchQuery('');
+                    setVerifiedOnly(false);
+                    setFeaturedOnly(false);
+                    setSavedOnly(false);
+                    setMinRating(0);
+                    setPriceRange('all');
+                    setSortBy('rating');
+                  }}
+                  className="text-white/40 hover:text-white underline underline-offset-2 px-2 text-xs cursor-pointer"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-                  {creators
-                    .filter((c) => c.featured)
-                    .slice(0, 3)
-                    .map((fc) => (
-                      <div
-                        key={fc.creatorId}
-                        className="group relative bg-neutral-950/70 border border-neutral-800 rounded-xl p-3 hover:border-neutral-700 transition-all flex items-center gap-3"
-                      >
-                        <SafeAvatar
-                          src={fc.profileImageUrl}
-                          name={fc.displayName}
-                          className="w-14 h-14 rounded-xl ring-1 ring-neutral-700 shrink-0"
-                          size={200}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <h3 className="font-bold text-white text-xs truncate group-hover:text-amber-400 transition-colors">
-                              {fc.displayName}
-                            </h3>
-                            {fc.verified && (
-                              <CheckCircle className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                            )}
-                          </div>
-                          <p className="text-[11px] text-neutral-400 truncate">
-                            {fc.roles[0] || 'Creative Professional'}
-                          </p>
-                          <div className="flex items-center gap-2 mt-1 text-[11px]">
-                            <span className="text-amber-400 font-semibold flex items-center gap-0.5">
-                              <Star className="w-3 h-3 fill-amber-400" />
-                              {fc.rating.toFixed(1)}
-                            </span>
-                            <span className="text-neutral-500">•</span>
-                            <span className="text-neutral-300 font-bold">
-                              From ৳{fc.startingPrice.toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
+            {/* 5. FEATURED FREELANCERS SECTION */}
+            <FeaturedFreelancersMarquee
+              creators={creators}
+              onSelectCreator={handleSelectCreator}
+              onViewAll={() => {
+                const gridEl = document.getElementById('all-freelancers-grid-section');
+                if (gridEl) {
+                  gridEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }}
+            />
 
-                        <div className="flex flex-col gap-1 shrink-0">
-                          <button
-                            onClick={() => handleSelectCreator(fc)}
-                            className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-[11px] font-semibold transition-colors"
-                          >
-                            Profile
-                          </button>
-                          <button
-                            onClick={() => handleStartBooking(fc)}
-                            className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-[11px] font-bold shadow transition-all"
-                          >
-                            Book
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </section>
-            )}
-
-            {/* Available Creators Section */}
-            <section className="space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-neutral-800/80">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg sm:text-xl font-bold text-white font-['Space_Grotesk']">
-                    Available Creators ({creators.length})
+            {/* 6. HOW IT WORKS (COMPACT HORIZONTAL SECTION) */}
+            <section id="how-it-works-section" className="rounded-3xl bg-[#11141B] border border-white/[0.08] p-6 sm:p-8 space-y-6 shadow-xl">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 border-b border-white/[0.06] pb-4">
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-black text-white font-['Space_Grotesk'] tracking-tight">
+                    How It Works
                   </h2>
-                  <span className="text-xs text-neutral-500 hidden sm:inline">• Verified &amp; Vetted in Bangladesh</span>
+                  <p className="text-xs sm:text-sm text-white/60 mt-0.5">
+                    Hire the right creative in a few simple steps.
+                  </p>
                 </div>
               </div>
 
-              {/* Creators Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Step 1 */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#171A22] border border-white/[0.08] space-y-3 relative group hover:border-white/[0.18] transition-colors">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-amber-400 font-mono">01</span>
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                      <Search className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">Find a Freelancer</h3>
+                    <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                      Search and explore talent. Filter by role, city, rating and verified credentials.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Step 2 */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#171A22] border border-white/[0.08] space-y-3 relative group hover:border-white/[0.18] transition-colors">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-rose-400 font-mono">02</span>
+                    <div className="w-8 h-8 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                      <MessageSquare className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">Send a Project Request</h3>
+                    <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                      Share your project brief, preferred shoot dates, and deliverable requirements.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Step 3 */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#171A22] border border-white/[0.08] space-y-3 relative group hover:border-white/[0.18] transition-colors">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-sky-400 font-mono">03</span>
+                    <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+                      <CheckCircle className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">Confirm &amp; Collaborate</h3>
+                    <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                      Agree on schedule and deliverables, book and start working together directly.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Step 4 */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#171A22] border border-white/[0.08] space-y-3 relative group hover:border-white/[0.18] transition-colors">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-emerald-400 font-mono">04</span>
+                    <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                      <Star className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">Receive &amp; Review</h3>
+                    <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                      Receive delivery files via Drive and leave an authentic review for the freelancer.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* 7. ALL FREELANCERS SECTION */}
+            <section id="all-freelancers-grid-section" className="space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.06]">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl sm:text-2xl font-black text-white font-['Space_Grotesk'] tracking-tight">
+                      All Freelancers ({creators.length})
+                    </h2>
+                  </div>
+                  <p className="text-xs text-white/60 mt-0.5">
+                    Browse all available independent creatives across Bangladesh.
+                  </p>
+                </div>
+
+                {/* Grid / List view toggle */}
+                <div className="flex items-center gap-1 bg-[#171A22] border border-white/[0.08] p-1 rounded-xl self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setViewLayout('grid')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                      viewLayout === 'grid'
+                        ? 'bg-white text-black shadow'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="Grid View"
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    <span>Grid</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setViewLayout('list')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                      viewLayout === 'list'
+                        ? 'bg-white text-black shadow'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="List View"
+                  >
+                    <ListIcon className="w-3.5 h-3.5" />
+                    <span>List</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Creators Grid / List Container */}
               {isLoadingCreators ? (
                 <div className="py-20 text-center space-y-3">
                   <RefreshCw className="w-8 h-8 text-rose-500 animate-spin mx-auto" />
-                  <p className="text-xs text-neutral-400">Loading verified creators...</p>
+                  <p className="text-xs text-white/60">Loading freelancers from database...</p>
                 </div>
               ) : creators.length === 0 ? (
-                <div className="py-16 text-center rounded-3xl bg-neutral-900/60 border border-neutral-800 p-8 space-y-4">
-                  <div className="w-14 h-14 rounded-2xl bg-neutral-800/80 flex items-center justify-center mx-auto text-neutral-500">
+                <div className="py-16 text-center rounded-3xl bg-[#11141B] border border-white/[0.08] p-8 space-y-4">
+                  <div className="w-14 h-14 rounded-2xl bg-[#171A22] border border-white/[0.08] flex items-center justify-center mx-auto text-white/40">
                     <Camera className="w-7 h-7" />
                   </div>
                   <div className="max-w-md mx-auto space-y-1">
                     <h3 className="text-base sm:text-lg font-bold text-white">
-                      No creators available yet
+                      No freelancers match your criteria
                     </h3>
-                    <p className="text-xs text-neutral-400">
-                      Become one of the first creators on CreatorFlow or adjust your search filters.
+                    <p className="text-xs text-white/60">
+                      Try resetting your search query or adjusting your filters.
                     </p>
                   </div>
                   <div className="flex items-center justify-center gap-3 pt-2">
@@ -732,33 +1030,46 @@ export default function App() {
                       onClick={() => {
                         setSelectedRole('all');
                         setSelectedCity('all');
+                        setSelectedAvailability('all');
                         setSearchQuery('');
                         setVerifiedOnly(false);
+                        setFeaturedOnly(false);
+                        setSavedOnly(false);
                         setMinRating(0);
                         setPriceRange('all');
                         setSortBy('rating');
                       }}
-                      className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 hover:text-white font-semibold transition-colors"
+                      className="px-4 py-2 rounded-xl bg-[#171A22] hover:bg-[#1E222D] text-xs text-white/80 hover:text-white border border-white/[0.08] font-semibold transition-colors cursor-pointer"
                     >
                       Reset Filters
                     </button>
                     <button
                       onClick={() => navigate('register', { role: 'creator' })}
-                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-xs text-white font-bold shadow-md shadow-rose-500/20 transition-all flex items-center gap-1.5"
+                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500 hover:from-rose-600 hover:to-amber-600 text-xs text-white font-bold shadow-md shadow-rose-500/20 transition-all flex items-center gap-1.5 cursor-pointer"
                     >
                       <Sparkles className="w-3.5 h-3.5" />
-                      <span>Become a Creator</span>
+                      <span>Join as Freelancer</span>
                     </button>
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div
+                  className={
+                    viewLayout === 'grid'
+                      ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6'
+                      : 'space-y-3.5'
+                  }
+                >
                   {creators.map((c) => (
                     <CreatorCard
                       key={c.creatorId}
                       creator={c}
+                      layout={viewLayout}
+                      isSaved={savedCreatorIds.includes(c.creatorId)}
+                      onToggleSave={handleToggleSave}
                       onSelect={handleSelectCreator}
                       onBook={(creator) => handleStartBooking(creator)}
+                      onMessage={(creator) => handleMessageCreator(creator)}
                     />
                   ))}
                 </div>
@@ -873,9 +1184,7 @@ export default function App() {
             session={session}
             onBack={() => navigate('explore')}
             onBook={(creator, pkg) => handleStartBooking(creator, pkg)}
-            onMessage={(creator) => {
-              navigate('dashboard', { tab: 'messages' });
-            }}
+            onMessage={(creator) => handleMessageCreator(creator)}
             onOpenDashboard={(tab) => navigate('dashboard', { tab })}
             onProfileUpdate={(updatedCreator) => {
               setSelectedCreator(updatedCreator);
@@ -916,6 +1225,51 @@ export default function App() {
         onRequireAuth={() => {
           setIsBookingModalOpen(false);
           navigate('login');
+        }}
+      />
+
+      {/* Guest Message Modal (Public inquiries without account creation) */}
+      <GuestMessageModal
+        isOpen={isGuestMessageModalOpen}
+        creator={guestMessageCreator}
+        sessionUser={session?.user || null}
+        onClose={() => {
+          setIsGuestMessageModalOpen(false);
+          setGuestMessageCreator(null);
+        }}
+        onOpenBookingGate={() => {
+          const c = guestMessageCreator;
+          setIsGuestMessageModalOpen(false);
+          if (c) {
+            handleStartBooking(c);
+          }
+        }}
+      />
+
+      {/* Booking Auth Gate Modal (Enforces registered client account for booking requests) */}
+      <BookingAuthGateModal
+        isOpen={isBookingAuthGateOpen}
+        creator={pendingBookingIntent?.creator || null}
+        selectedPackage={pendingBookingIntent?.pkg || null}
+        onClose={() => {
+          setIsBookingAuthGateOpen(false);
+          setPendingBookingIntent(null);
+        }}
+        onNavigateLogin={() => {
+          setIsBookingAuthGateOpen(false);
+          navigate('login');
+        }}
+        onNavigateRegister={() => {
+          setIsBookingAuthGateOpen(false);
+          navigate('register', { role: 'customer' });
+        }}
+        onSwitchToMessage={() => {
+          const c = pendingBookingIntent?.creator;
+          setIsBookingAuthGateOpen(false);
+          setPendingBookingIntent(null);
+          if (c) {
+            handleMessageCreator(c);
+          }
         }}
       />
 
