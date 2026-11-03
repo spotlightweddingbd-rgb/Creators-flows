@@ -46,6 +46,17 @@ import {
   AlertTriangle,
   CheckCircle2,
   X,
+  Image as ImageIcon,
+  Briefcase,
+  Tag,
+  Save,
+  Archive,
+  RotateCcw,
+  Link,
+  Unlink,
+  Sliders,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import {
   AuthSession,
@@ -56,6 +67,8 @@ import {
   Message,
   Creator,
   Review,
+  Service,
+  PackageItem,
 } from '../types';
 import {
   getBookings,
@@ -63,6 +76,21 @@ import {
   acceptBooking,
   confirmBooking,
   declineBooking,
+  rescheduleBooking,
+  cancelBooking,
+  archiveBooking,
+  restoreBooking,
+  connectGoogleCalendar,
+  disconnectGoogleCalendar,
+  syncGoogleCalendarNow,
+  retryCalendarSync,
+  deleteConversation,
+  archiveConversation,
+  deleteMessage,
+  updateProfilePhoto,
+  removeProfilePhoto,
+  updateCoverPhoto,
+  removeCoverPhoto,
   updateProjectStatus,
   getCreatorPortfolio,
   createPortfolioItem,
@@ -82,7 +110,23 @@ import {
   uploadBase64File,
   updateCreatorProfile,
   getCreatorProfile,
+  getCreatorServices,
+  createService,
+  updateService,
+  deleteService,
+  getCreatorPackages,
+  createPackage,
+  updatePackage,
+  deletePackage,
+  deleteBooking,
+  requestAccountDeletion,
+  cancelAccountDeletion,
+  getAccountDeletionStatus,
+  adminGetDeletionRecords,
 } from '../services/api';
+import { BangladeshLocationSelect } from './BangladeshLocationSelect';
+import { ALL_BANGLADESH_OPTION, getDivisionForDistrict } from '../utils/bangladeshLocations';
+import { AccountDeletionStatus, AdminDeletionRecord } from '../types';
 import {
   SafeAvatar,
   SafeCover,
@@ -152,6 +196,139 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [calendarMonth, setCalendarMonth] = useState<Date>(new Date());
   const [blockNotesInput, setBlockNotesInput] = useState('');
+  const [isBlockingDate, setIsBlockingDate] = useState(false);
+
+  // Services & Packages state
+  const [services, setServices] = useState<Service[]>([]);
+  const [packages, setPackages] = useState<PackageItem[]>([]);
+  const [isServicesLoading, setIsServicesLoading] = useState(false);
+  const [serviceModal, setServiceModal] = useState<{
+    isOpen: boolean;
+    mode: 'create' | 'edit';
+    service: Service | null;
+  }>({
+    isOpen: false,
+    mode: 'create',
+    service: null,
+  });
+  const [serviceForm, setServiceForm] = useState({
+    title: '',
+    category: 'Cinematography',
+    startingPrice: 15000,
+    deliveryTime: '7 Days',
+    location: 'On-Location Dhaka',
+    description: '',
+    deliverables: '',
+  });
+  const [isSavingService, setIsSavingService] = useState(false);
+
+  // Central Confirmation Modal Dialog State
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    confirmLabel: string;
+    cancelLabel?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => Promise<void> | void;
+    isProcessing?: boolean;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+    confirmLabel: 'Confirm',
+    onConfirm: () => {},
+  });
+
+  // Decline Booking Modal State (replaces browser prompt)
+  const [declineBookingModal, setDeclineBookingModal] = useState<{
+    isOpen: boolean;
+    bookingId: string | null;
+    reason: string;
+  }>({
+    isOpen: false,
+    bookingId: null,
+    reason: '',
+  });
+
+  // Google Calendar Synchronization State
+  const [showConnectCalendarModal, setShowConnectCalendarModal] = useState(false);
+  const [calendarEmailInput, setCalendarEmailInput] = useState(
+    session.creator?.calendarEmail || session.user.email || ''
+  );
+  const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
+  const [isSyncingCalendarNow, setIsSyncingCalendarNow] = useState(false);
+  const [retryingBookingId, setRetryingBookingId] = useState<string | null>(null);
+
+  // Reschedule Booking Modal State
+  const [rescheduleModal, setRescheduleModal] = useState<{
+    isOpen: boolean;
+    booking: Booking | null;
+    eventDate: string;
+    startTime: string;
+    endTime: string;
+    isSaving: boolean;
+  }>({
+    isOpen: false,
+    booking: null,
+    eventDate: '',
+    startTime: '10:00',
+    endTime: '18:00',
+    isSaving: false,
+  });
+
+  // Cancel Booking Modal State
+  const [cancelBookingModal, setCancelBookingModal] = useState<{
+    isOpen: boolean;
+    booking: Booking | null;
+    reason: string;
+    isCancelling: boolean;
+  }>({
+    isOpen: false,
+    booking: null,
+    reason: '',
+    isCancelling: false,
+  });
+
+  // Facebook-Style Profile Photo Crop / Zoom Modal State
+  const [profileCropModal, setProfileCropModal] = useState<{
+    isOpen: boolean;
+    previewUrl: string;
+    zoom: number;
+    rawBase64: string;
+    fileName: string;
+    isUploading: boolean;
+  }>({
+    isOpen: false,
+    previewUrl: '',
+    zoom: 1,
+    rawBase64: '',
+    fileName: 'avatar.jpg',
+    isUploading: false,
+  });
+
+  // Facebook-Style Cover Banner Reposition Modal State
+  const [coverRepositionModal, setCoverRepositionModal] = useState<{
+    isOpen: boolean;
+    previewUrl: string;
+    position: 'top' | 'center' | 'bottom';
+    rawBase64: string;
+    fileName: string;
+    isUploading: boolean;
+  }>({
+    isOpen: false,
+    previewUrl: '',
+    position: 'center',
+    rawBase64: '',
+    fileName: 'cover.jpg',
+    isUploading: false,
+  });
+
+  // Availability Status State
+  const [creatorAvailabilityStatus, setCreatorAvailabilityStatus] = useState<
+    'Available' | 'Limited' | 'Busy' | 'Unavailable'
+  >(session.creator?.availabilityStatus || 'Available');
+  const [isSavingAvailabilityStatus, setIsSavingAvailabilityStatus] = useState(false);
 
   // Settings state
   const currentCreator = session.creator;
@@ -165,9 +342,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     district: currentCreator?.district || '',
     country: currentCreator?.country || 'Bangladesh',
     phone: session.user.phone || '',
-    serviceAreas: (currentCreator?.serviceAreas || ['Dhaka']).join(', '),
-    skills: (currentCreator?.skills || ['Photography', 'Editing']).join(', '),
-    equipment: (currentCreator?.equipment || ['Professional Camera System']).join(', '),
     roles: currentCreator?.roles || ['Photographer'],
     instagram: currentCreator?.instagram || '',
     youtube: currentCreator?.youtube || '',
@@ -176,9 +350,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     linkedin: currentCreator?.linkedin || '',
     website: currentCreator?.website || '',
   });
+
+  // Interactive tag lists
+  const [skillsList, setSkillsList] = useState<string[]>(
+    currentCreator?.skills && currentCreator.skills.length > 0
+      ? currentCreator.skills
+      : ['Photography', 'Cinematography', 'Color Grading']
+  );
+  const [newSkillInput, setNewSkillInput] = useState('');
+
+  const [equipmentList, setEquipmentList] = useState<string[]>(
+    currentCreator?.equipment && currentCreator.equipment.length > 0
+      ? currentCreator.equipment
+      : ['Sony FX6 Cinema Line', 'DJI Ronin RS3 Gimbal', 'Aputure 600d Pro']
+  );
+  const [newEquipmentInput, setNewEquipmentInput] = useState('');
+
+  const [serviceAreasList, setServiceAreasList] = useState<string[]>(
+    currentCreator?.serviceAreas && currentCreator.serviceAreas.length > 0
+      ? currentCreator.serviceAreas
+      : ['Dhaka', 'Chittagong', 'Sylhet']
+  );
+  const [newAreaInput, setNewAreaInput] = useState('');
+
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [settingsSuccessToast, setSettingsSuccessToast] = useState(false);
+  const [settingsSuccessToast, setSettingsSuccessToast] = useState<string | null>(null);
   const [profileCopiedToast, setProfileCopiedToast] = useState(false);
+  const [isUploadingProfilePhoto, setIsUploadingProfilePhoto] = useState(false);
+  const [isUploadingCoverPhoto, setIsUploadingCoverPhoto] = useState(false);
 
   const isCreator = session.user.accountType === 'creator' || Boolean(session.creator);
   const isAdmin =
@@ -199,6 +398,70 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [isUpdatingFeatured, setIsUpdatingFeatured] = useState(false);
   const [adminDetailCreator, setAdminDetailCreator] = useState<Creator | null>(null);
   const [adminToast, setAdminToast] = useState<string | null>(null);
+
+  // Facebook-Style Account Deletion State
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [deleteAccountPassword, setDeleteAccountPassword] = useState('');
+  const [deleteAccountReason, setDeleteAccountReason] = useState('Taking a temporary break');
+  const [customDeleteReason, setCustomDeleteReason] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [isCancellingDeletion, setIsCancellingDeletion] = useState(false);
+
+  // Admin Deletion Audit State
+  const [adminDeletionData, setAdminDeletionData] = useState<{
+    metrics: { totalPending: number; totalCancelled: number; totalCompleted: number };
+    pendingDeletions: AdminDeletionRecord[];
+    cancelledDeletions: AdminDeletionRecord[];
+    completedDeletions: AdminDeletionRecord[];
+  } | null>(null);
+  const [isLoadingAdminDeletions, setIsLoadingAdminDeletions] = useState(false);
+
+  const handleRequestDeletion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsDeletingAccount(true);
+    try {
+      const finalReason =
+        deleteAccountReason === 'Other reason' && customDeleteReason.trim()
+          ? customDeleteReason.trim()
+          : deleteAccountReason;
+
+      await requestAccountDeletion(deleteAccountPassword, finalReason, true);
+      setShowDeleteAccountModal(false);
+      setDeleteAccountPassword('');
+      setCustomDeleteReason('');
+      setSettingsSuccessToast('Account scheduled for deletion. 30-day grace period started.');
+      setTimeout(() => setSettingsSuccessToast(null), 4000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to schedule account deletion');
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const handleCancelDeletion = async () => {
+    setIsCancellingDeletion(true);
+    try {
+      await cancelAccountDeletion();
+      setSettingsSuccessToast('Welcome back! Account deletion cancelled. Your profile is active.');
+      setTimeout(() => setSettingsSuccessToast(null), 4000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to cancel deletion request');
+    } finally {
+      setIsCancellingDeletion(false);
+    }
+  };
+
+  const handleLoadAdminDeletions = async () => {
+    setIsLoadingAdminDeletions(true);
+    try {
+      const data = await adminGetDeletionRecords();
+      setAdminDeletionData(data);
+    } catch (err: any) {
+      console.warn('Failed to load deletion audit:', err);
+    } finally {
+      setIsLoadingAdminDeletions(false);
+    }
+  };
 
   const handleCopyProfileLink = () => {
     const username = session.creator?.username || (session.user as any)?.username;
@@ -243,20 +506,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         setBookings(bList);
         setProjects(pList);
 
-        if (activeTab === 'overview' && session.creator) {
-          const [portList, avlList, convList, fullProf] = await Promise.all([
+        if (session.creator) {
+          const [portList, avlList, convList, fullProf, srvList, pkgList] = await Promise.all([
             getCreatorPortfolio(session.creator.creatorId).catch(() => []),
             getAvailability(session.creator.creatorId).catch(() => []),
             getConversations().catch(() => []),
             getCreatorProfile(session.creator.username).catch(() => null),
+            getCreatorServices(session.creator.creatorId).catch(() => []),
+            getCreatorPackages(session.creator.creatorId).catch(() => []),
           ]);
           setPortfolio(portList);
           setAvailability(avlList);
           setConversations(convList);
+          setServices(srvList);
+          setPackages(pkgList);
           if (fullProf && fullProf.reviews) {
             setReviews(fullProf.reviews);
           }
         }
+      } else if (activeTab === 'services' && session.creator) {
+        setIsServicesLoading(true);
+        const [srvList, pkgList] = await Promise.all([
+          getCreatorServices(session.creator.creatorId),
+          getCreatorPackages(session.creator.creatorId),
+        ]);
+        setServices(srvList);
+        setPackages(pkgList);
+        setIsServicesLoading(false);
       } else if (activeTab === 'availability' && session.creator) {
         const [aList, bList] = await Promise.all([
           getAvailability(session.creator.creatorId),
@@ -325,20 +601,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (selectedBookingDetails?.bookingId === bookingId) {
         setSelectedBookingDetails(updated);
       }
+      setSettingsSuccessToast('Booking request accepted!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
     } finally {
       setStatusActionLoading(null);
     }
   };
 
-  const handleDeclineBooking = async (bookingId: string) => {
-    const reason = prompt('Optional reason for declining:');
+  const handleOpenDeclineModal = (bookingId: string) => {
+    setDeclineBookingModal({
+      isOpen: true,
+      bookingId,
+      reason: '',
+    });
+  };
+
+  const handleConfirmDeclineBooking = async () => {
+    if (!declineBookingModal.bookingId) return;
+    const bookingId = declineBookingModal.bookingId;
     setStatusActionLoading(bookingId);
     try {
-      const updated = await declineBooking(bookingId, reason || undefined);
+      const updated = await declineBooking(bookingId, declineBookingModal.reason || undefined);
       setBookings((prev) => prev.map((b) => (b.bookingId === bookingId ? updated : b)));
       if (selectedBookingDetails?.bookingId === bookingId) {
         setSelectedBookingDetails(updated);
       }
+      setDeclineBookingModal({ isOpen: false, bookingId: null, reason: '' });
+      setSettingsSuccessToast('Booking inquiry declined.');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
     } finally {
       setStatusActionLoading(null);
     }
@@ -352,8 +642,448 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (selectedBookingDetails?.bookingId === bookingId) {
         setSelectedBookingDetails(updated);
       }
+      setSettingsSuccessToast('Booking confirmed!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
     } finally {
       setStatusActionLoading(null);
+    }
+  };
+
+  // Google Calendar Integration Handlers
+  const handleConnectGoogleCalendar = async () => {
+    if (!session.creator) return;
+    const emailToUse = calendarEmailInput.trim();
+    if (!emailToUse) {
+      alert('Please enter your Google Calendar email address.');
+      return;
+    }
+    setIsConnectingCalendar(true);
+    try {
+      await connectGoogleCalendar(session.creator.creatorId, { email: emailToUse });
+      if (session.creator) {
+        session.creator.calendarConnected = true;
+        session.creator.calendarEmail = emailToUse;
+        session.creator.calendarSyncStatus = 'connected';
+        session.creator.calendarLastSyncAt = new Date().toISOString();
+      }
+      setShowConnectCalendarModal(false);
+      setSettingsSuccessToast('Google Calendar connected successfully!');
+      setTimeout(() => setSettingsSuccessToast(null), 3500);
+      loadDashboardData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to connect Google Calendar');
+    } finally {
+      setIsConnectingCalendar(false);
+    }
+  };
+
+  const handleDisconnectGoogleCalendarWithConfirm = () => {
+    if (!session.creator) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Disconnect Google Calendar?',
+      description: 'Future confirmed bookings will no longer automatically sync to your personal Google Calendar.',
+      confirmLabel: 'Disconnect Calendar',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await disconnectGoogleCalendar(session.creator!.creatorId);
+          if (session.creator) {
+            session.creator.calendarConnected = false;
+            session.creator.calendarSyncStatus = 'disconnected';
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Google Calendar disconnected.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+          loadDashboardData();
+        } catch (err: any) {
+          alert(err.message || 'Failed to disconnect calendar');
+        }
+      },
+    });
+  };
+
+  const handleSyncGoogleCalendarNow = async () => {
+    if (!session.creator) return;
+    setIsSyncingCalendarNow(true);
+    try {
+      const res = await syncGoogleCalendarNow(session.creator.creatorId);
+      if (session.creator) {
+        session.creator.calendarLastSyncAt = new Date().toISOString();
+      }
+      setSettingsSuccessToast(`Google Calendar synchronized! (${res.syncedCount || 0} shoots synced)`);
+      setTimeout(() => setSettingsSuccessToast(null), 3500);
+      loadDashboardData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to sync Google Calendar');
+    } finally {
+      setIsSyncingCalendarNow(false);
+    }
+  };
+
+  const handleRetryCalendarSync = async (bookingId: string) => {
+    setRetryingBookingId(bookingId);
+    try {
+      const res = await retryCalendarSync(bookingId);
+      setBookings((prev) =>
+        prev.map((b) =>
+          b.bookingId === bookingId
+            ? { ...b, calendarSyncStatus: 'synced', calendarSyncError: undefined }
+            : b
+        )
+      );
+      setSettingsSuccessToast('Shoot successfully synchronized to Google Calendar!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Calendar retry sync failed');
+    } finally {
+      setRetryingBookingId(null);
+    }
+  };
+
+  // Reschedule Booking Handlers
+  const handleOpenRescheduleModal = (booking: Booking) => {
+    setRescheduleModal({
+      isOpen: true,
+      booking,
+      eventDate: booking.eventDate || '',
+      startTime: booking.startTime || '10:00',
+      endTime: booking.endTime || '18:00',
+      isSaving: false,
+    });
+  };
+
+  const handleSaveReschedule = async () => {
+    if (!rescheduleModal.booking) return;
+    if (!rescheduleModal.eventDate) {
+      alert('Please pick a new shoot date.');
+      return;
+    }
+    setRescheduleModal((prev) => ({ ...prev, isSaving: true }));
+    try {
+      const updated = await rescheduleBooking(rescheduleModal.booking.bookingId, {
+        eventDate: rescheduleModal.eventDate,
+        startTime: rescheduleModal.startTime,
+        endTime: rescheduleModal.endTime,
+      });
+      setBookings((prev) =>
+        prev.map((b) => (b.bookingId === updated.bookingId ? updated : b))
+      );
+      if (selectedBookingDetails?.bookingId === updated.bookingId) {
+        setSelectedBookingDetails(updated);
+      }
+      setRescheduleModal({
+        isOpen: false,
+        booking: null,
+        eventDate: '',
+        startTime: '10:00',
+        endTime: '18:00',
+        isSaving: false,
+      });
+      setSettingsSuccessToast('Booking rescheduled & Google Calendar updated!');
+      setTimeout(() => setSettingsSuccessToast(null), 3500);
+    } catch (err: any) {
+      alert(err.message || 'Failed to reschedule booking');
+      setRescheduleModal((prev) => ({ ...prev, isSaving: false }));
+    }
+  };
+
+  // Cancel Booking Handlers
+  const handleOpenCancelModal = (booking: Booking) => {
+    setCancelBookingModal({
+      isOpen: true,
+      booking,
+      reason: '',
+      isCancelling: false,
+    });
+  };
+
+  const handleConfirmCancelBooking = async () => {
+    if (!cancelBookingModal.booking) return;
+    setCancelBookingModal((prev) => ({ ...prev, isCancelling: true }));
+    try {
+      const updated = await cancelBooking(
+        cancelBookingModal.booking.bookingId,
+        cancelBookingModal.reason.trim() || undefined
+      );
+      setBookings((prev) =>
+        prev.map((b) => (b.bookingId === updated.bookingId ? updated : b))
+      );
+      if (selectedBookingDetails?.bookingId === updated.bookingId) {
+        setSelectedBookingDetails(updated);
+      }
+      setCancelBookingModal({
+        isOpen: false,
+        booking: null,
+        reason: '',
+        isCancelling: false,
+      });
+      setSettingsSuccessToast('Booking cancelled & calendar event removed.');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to cancel booking');
+      setCancelBookingModal((prev) => ({ ...prev, isCancelling: false }));
+    }
+  };
+
+  // Archive & Restore Booking Handlers
+  const handleArchiveBooking = (booking: Booking) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Archive Booking?',
+      description: `Archive shoot "${booking.projectTitle}"? It will be moved to the Archived tab. Financial history and client records remain completely preserved.`,
+      confirmLabel: 'Archive Booking',
+      variant: 'warning',
+      onConfirm: async () => {
+        try {
+          const updated = await archiveBooking(booking.bookingId);
+          setBookings((prev) =>
+            prev.map((b) => (b.bookingId === updated.bookingId ? updated : b))
+          );
+          if (selectedBookingDetails?.bookingId === updated.bookingId) {
+            setSelectedBookingDetails(updated);
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Booking moved to archives.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (err: any) {
+          alert(err.message || 'Failed to archive booking');
+        }
+      },
+    });
+  };
+
+  const handleRestoreBooking = (booking: Booking) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Restore Booking?',
+      description: `Restore shoot "${booking.projectTitle}" back to your active bookings list?`,
+      confirmLabel: 'Restore Booking',
+      variant: 'primary',
+      onConfirm: async () => {
+        try {
+          const updated = await restoreBooking(booking.bookingId);
+          setBookings((prev) =>
+            prev.map((b) => (b.bookingId === updated.bookingId ? updated : b))
+          );
+          if (selectedBookingDetails?.bookingId === updated.bookingId) {
+            setSelectedBookingDetails(updated);
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Booking restored to active list.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (err: any) {
+          alert(err.message || 'Failed to restore booking');
+        }
+      },
+    });
+  };
+
+  const handleDeleteBooking = (booking: Booking) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Permanently Delete Booking?',
+      description: `Are you sure you want to permanently delete this booking for "${booking.projectTitle}" (${booking.bookingId})? This will permanently remove the record from the Google Sheets database and clean up connected calendar entries. This action cannot be undone.`,
+      confirmLabel: 'Delete Permanently',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deleteBooking(booking.bookingId);
+          setBookings((prev) => prev.filter((b) => b.bookingId !== booking.bookingId));
+          if (selectedBookingDetails?.bookingId === booking.bookingId) {
+            setSelectedBookingDetails(null);
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Booking permanently deleted.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (err: any) {
+          alert(err.message || 'Failed to delete booking');
+        }
+      },
+    });
+  };
+
+  const handleMarkBookingCompleted = async (bookingId: string) => {
+    setStatusActionLoading(bookingId);
+    try {
+      const updated = await updateProjectStatus(bookingId, 'Completed');
+      setBookings((prev) =>
+        prev.map((b) =>
+          b.bookingId === bookingId ? { ...b, status: 'completed' } : b
+        )
+      );
+      setSettingsSuccessToast('Shoot marked as Completed!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to complete shoot');
+    } finally {
+      setStatusActionLoading(null);
+    }
+  };
+
+  // Conversation & Messaging Handlers
+  const handleDeleteConversation = (convId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Conversation?',
+      description: 'Permanently remove this chat history from your inbox?',
+      confirmLabel: 'Delete Chat',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deleteConversation(convId);
+          setConversations((prev) => prev.filter((c) => c.conversationId !== convId));
+          if (activeConversationId === convId) {
+            setActiveConversationId(null);
+            setChatMessages([]);
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Conversation deleted.');
+          setTimeout(() => setSettingsSuccessToast(null), 2500);
+        } catch (err: any) {
+          alert(err.message || 'Failed to delete conversation');
+        }
+      },
+    });
+  };
+
+  const handleArchiveConversation = (convId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Archive Conversation?',
+      description: 'Move this discussion out of your active inbox?',
+      confirmLabel: 'Archive Chat',
+      variant: 'warning',
+      onConfirm: async () => {
+        try {
+          await archiveConversation(convId);
+          setConversations((prev) => prev.filter((c) => c.conversationId !== convId));
+          if (activeConversationId === convId) {
+            setActiveConversationId(null);
+            setChatMessages([]);
+          }
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Conversation archived.');
+          setTimeout(() => setSettingsSuccessToast(null), 2500);
+        } catch (err: any) {
+          alert(err.message || 'Failed to archive conversation');
+        }
+      },
+    });
+  };
+
+  const handleDeleteMessage = (messageId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Message?',
+      description: 'Remove this message from the conversation thread?',
+      confirmLabel: 'Delete Message',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deleteMessage(messageId);
+          setChatMessages((prev) => prev.filter((m) => m.messageId !== messageId));
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        } catch (err: any) {
+          alert(err.message || 'Failed to delete message');
+        }
+      },
+    });
+  };
+
+  // Facebook-Style Profile Photo Crop / Preview Handlers
+  const handleSelectProfilePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session.creator) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setProfileCropModal({
+        isOpen: true,
+        previewUrl: reader.result as string,
+        zoom: 1,
+        rawBase64: reader.result as string,
+        fileName: file.name,
+        isUploading: false,
+      });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSaveCroppedProfilePhoto = async () => {
+    if (!session.creator || !profileCropModal.rawBase64) return;
+    setProfileCropModal((prev) => ({ ...prev, isUploading: true }));
+    try {
+      const res = await updateProfilePhoto(
+        session.creator.creatorId,
+        profileCropModal.rawBase64,
+        profileCropModal.fileName,
+        profileCropModal.zoom
+      );
+      if (session.creator) {
+        session.creator.profileImageUrl = res.profileImageUrl;
+      }
+      setProfileCropModal({
+        isOpen: false,
+        previewUrl: '',
+        zoom: 1,
+        rawBase64: '',
+        fileName: 'avatar.jpg',
+        isUploading: false,
+      });
+      setSettingsSuccessToast('Profile avatar updated successfully!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to save profile photo');
+      setProfileCropModal((prev) => ({ ...prev, isUploading: false }));
+    }
+  };
+
+  // Facebook-Style Cover Reposition Handlers
+  const handleSelectCoverPhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session.creator) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCoverRepositionModal({
+        isOpen: true,
+        previewUrl: reader.result as string,
+        position: 'center',
+        rawBase64: reader.result as string,
+        fileName: file.name,
+        isUploading: false,
+      });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSaveRepositionedCoverPhoto = async () => {
+    if (!session.creator || !coverRepositionModal.rawBase64) return;
+    setCoverRepositionModal((prev) => ({ ...prev, isUploading: true }));
+    try {
+      const res = await updateCoverPhoto(
+        session.creator.creatorId,
+        coverRepositionModal.rawBase64,
+        coverRepositionModal.fileName,
+        coverRepositionModal.position
+      );
+      if (session.creator) {
+        session.creator.coverImageUrl = res.coverImageUrl;
+      }
+      setCoverRepositionModal({
+        isOpen: false,
+        previewUrl: '',
+        position: 'center',
+        rawBase64: '',
+        fileName: 'cover.jpg',
+        isUploading: false,
+      });
+      setSettingsSuccessToast('Cover banner updated successfully!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to save cover banner');
+      setCoverRepositionModal((prev) => ({ ...prev, isUploading: false }));
     }
   };
 
@@ -468,34 +1198,361 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  const handleDeletePortfolioItem = async (portfolioId: string) => {
-    if (!confirm('Are you sure you want to remove this item from your portfolio?')) return;
-    try {
-      await deletePortfolioItem(portfolioId);
-      setPortfolio((prev) => prev.filter((p) => p.portfolioId !== portfolioId));
-    } catch (e) {
-      console.error(e);
-    }
+  const handleDeletePortfolioItemWithConfirm = (item: PortfolioItem) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Portfolio Item?',
+      description: `Are you sure you want to permanently delete "${item.title}"? This will remove this work from your studio showcase and public profile.`,
+      confirmLabel: 'Delete Work',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deletePortfolioItem(item.portfolioId);
+          setPortfolio((prev) => prev.filter((p) => p.portfolioId !== item.portfolioId));
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Portfolio item removed from your studio.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (e: any) {
+          alert(e.message || 'Failed to delete portfolio item');
+        }
+      },
+    });
   };
 
   const handleBlockSelectedDate = async () => {
     if (!session.creator || !selectedDate) return;
+    setIsBlockingDate(true);
     try {
-      const slot = await blockDate(session.creator.creatorId, selectedDate, blockNotesInput || 'Unavailable');
+      const slot = await blockDate(
+        session.creator.creatorId,
+        selectedDate,
+        blockNotesInput.trim() || 'Unavailable'
+      );
       setAvailability((prev) => [...prev.filter((a) => a.date !== selectedDate), slot]);
       setBlockNotesInput('');
-    } catch (e) {
-      console.error(e);
+      setSettingsSuccessToast(`Date ${selectedDate} blocked on your calendar.`);
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to block date');
+    } finally {
+      setIsBlockingDate(false);
     }
   };
 
-  const handleUnblockDate = async (date: string) => {
+  const handleUnblockDateWithConfirm = (slotDate: string) => {
+    if (!session.creator) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Remove Blackout Date?',
+      description: `Reopen ${slotDate} for client bookings on your production calendar?`,
+      confirmLabel: 'Remove Date',
+      variant: 'warning',
+      onConfirm: async () => {
+        try {
+          await unblockDate(session.creator!.creatorId, slotDate);
+          setAvailability((prev) => prev.filter((a) => a.date !== slotDate));
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast(`Date ${slotDate} is now open for bookings.`);
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (e: any) {
+          alert(e.message || 'Failed to unblock date');
+        }
+      },
+    });
+  };
+
+  const handleSaveAvailabilityStatus = async (
+    targetStatus: 'Available' | 'Limited' | 'Busy' | 'Unavailable'
+  ) => {
+    if (!session.creator) return;
+    setIsSavingAvailabilityStatus(true);
+    try {
+      setCreatorAvailabilityStatus(targetStatus);
+      await updateCreatorProfile(session.creator.creatorId, {
+        availabilityStatus: targetStatus,
+      });
+      setSettingsSuccessToast(`Availability status updated to "${targetStatus.toUpperCase()}".`);
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to update availability status');
+    } finally {
+      setIsSavingAvailabilityStatus(false);
+    }
+  };
+
+  // Services CRUD handlers
+  const handleOpenAddService = () => {
+    setServiceForm({
+      title: '',
+      category: 'Cinematography',
+      startingPrice: 15000,
+      deliveryTime: '7 Days',
+      location: 'On-Location Dhaka',
+      description: '',
+      deliverables: '',
+    });
+    setServiceModal({
+      isOpen: true,
+      mode: 'create',
+      service: null,
+    });
+  };
+
+  const handleOpenEditService = (service: Service) => {
+    setServiceForm({
+      title: service.title,
+      category: service.category || 'Cinematography',
+      startingPrice: service.startingPrice || 15000,
+      deliveryTime: service.deliveryTime || '7 Days',
+      location: service.location || 'On-Location Dhaka',
+      description: service.description || '',
+      deliverables: Array.isArray(service.deliverables) ? service.deliverables.join(', ') : '',
+    });
+    setServiceModal({
+      isOpen: true,
+      mode: 'edit',
+      service,
+    });
+  };
+
+  const handleSaveService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!session.creator) return;
+    if (!serviceForm.title.trim()) {
+      alert('Please enter a service title.');
+      return;
+    }
+
+    setIsSavingService(true);
+    try {
+      if (serviceModal.mode === 'create') {
+        const created = await createService(session.creator.creatorId, {
+          title: serviceForm.title.trim(),
+          category: serviceForm.category,
+          startingPrice: Number(serviceForm.startingPrice) || 0,
+          deliveryTime: serviceForm.deliveryTime.trim(),
+          location: serviceForm.location.trim(),
+          description: serviceForm.description.trim(),
+        });
+        setServices((prev) => [...prev, created]);
+        setSettingsSuccessToast(`Service "${created.title}" published successfully!`);
+      } else if (serviceModal.service) {
+        const updated = await updateService(serviceModal.service.serviceId, {
+          title: serviceForm.title.trim(),
+          category: serviceForm.category,
+          startingPrice: Number(serviceForm.startingPrice) || 0,
+          deliveryTime: serviceForm.deliveryTime.trim(),
+          location: serviceForm.location.trim(),
+          description: serviceForm.description.trim(),
+        });
+        setServices((prev) =>
+          prev.map((s) => (s.serviceId === updated.serviceId ? updated : s))
+        );
+        setSettingsSuccessToast(`Service "${updated.title}" updated successfully!`);
+      }
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+      setServiceModal({ isOpen: false, mode: 'create', service: null });
+    } catch (e: any) {
+      alert(e.message || 'Failed to save service');
+    } finally {
+      setIsSavingService(false);
+    }
+  };
+
+  const handleDeleteServiceWithConfirm = (service: Service) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Service Offering?',
+      description: `Are you sure you want to permanently delete "${service.title}"? Clients will no longer see this package in your public profile.`,
+      confirmLabel: 'Delete Service',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deleteService(service.serviceId);
+          setServices((prev) => prev.filter((s) => s.serviceId !== service.serviceId));
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast(`Service "${service.title}" was deleted.`);
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (e: any) {
+          alert(e.message || 'Failed to delete service');
+        }
+      },
+    });
+  };
+
+  // Photo removal handlers with confirmation
+  const handleRemoveProfilePhotoWithConfirm = () => {
+    if (!session.creator) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Remove Profile Photo?',
+      description: 'Your public avatar will be cleared and replaced with your default initials.',
+      confirmLabel: 'Remove Photo',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await updateCreatorProfile(session.creator!.creatorId, { profileImageUrl: '' });
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Profile avatar removed.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (e: any) {
+          alert(e.message || 'Failed to remove photo');
+        }
+      },
+    });
+  };
+
+  const handleRemoveCoverPhotoWithConfirm = () => {
+    if (!session.creator) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Remove Cover Banner?',
+      description: 'Your storefront header banner will be cleared and replaced with the default aesthetic gradient.',
+      confirmLabel: 'Remove Cover',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await updateCreatorProfile(session.creator!.creatorId, { coverImageUrl: '' });
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          setSettingsSuccessToast('Cover banner removed.');
+          setTimeout(() => setSettingsSuccessToast(null), 3000);
+        } catch (e: any) {
+          alert(e.message || 'Failed to remove cover');
+        }
+      },
+    });
+  };
+
+  const handleUploadProfilePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session.creator) return;
+    setIsUploadingProfilePhoto(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64Data = reader.result as string;
+        let finalUrl = base64Data;
+        try {
+          const driveRes = await uploadBase64File({
+            creatorId: session.creator!.creatorId,
+            uploadType: 'profile',
+            fileName: file.name,
+            mimeType: file.type || 'image/jpeg',
+            base64Data,
+          });
+          finalUrl = driveRes.fileUrl;
+        } catch (err) {
+          console.warn('Fallback direct image for profile photo');
+        }
+        await updateCreatorProfile(session.creator!.creatorId, { profileImageUrl: finalUrl });
+        setSettingsSuccessToast('Profile avatar updated successfully!');
+        setTimeout(() => setSettingsSuccessToast(null), 3000);
+      } catch (err: any) {
+        alert(err.message || 'Failed to upload profile photo');
+      } finally {
+        setIsUploadingProfilePhoto(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUploadCoverPhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session.creator) return;
+    setIsUploadingCoverPhoto(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64Data = reader.result as string;
+        let finalUrl = base64Data;
+        try {
+          const driveRes = await uploadBase64File({
+            creatorId: session.creator!.creatorId,
+            uploadType: 'cover',
+            fileName: file.name,
+            mimeType: file.type || 'image/jpeg',
+            base64Data,
+          });
+          finalUrl = driveRes.fileUrl;
+        } catch (err) {
+          console.warn('Fallback direct image for cover photo');
+        }
+        await updateCreatorProfile(session.creator!.creatorId, { coverImageUrl: finalUrl });
+        setSettingsSuccessToast('Cover banner updated successfully!');
+        setTimeout(() => setSettingsSuccessToast(null), 3000);
+      } catch (err: any) {
+        alert(err.message || 'Failed to upload cover banner');
+      } finally {
+        setIsUploadingCoverPhoto(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Tag list managers
+  const handleAddSkill = () => {
+    const val = newSkillInput.trim();
+    if (!val || skillsList.includes(val)) return;
+    setSkillsList([...skillsList, val]);
+    setNewSkillInput('');
+  };
+
+  const handleRemoveSkill = (indexToRemove: number) => {
+    setSkillsList(skillsList.filter((_, idx) => idx !== indexToRemove));
+  };
+
+  const handleSaveSkills = async () => {
     if (!session.creator) return;
     try {
-      await unblockDate(session.creator.creatorId, date);
-      setAvailability((prev) => prev.filter((a) => a.date !== date));
-    } catch (e) {
-      console.error(e);
+      await updateCreatorProfile(session.creator.creatorId, { skills: skillsList });
+      setSettingsSuccessToast('Skills updated successfully!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to update skills');
+    }
+  };
+
+  const handleAddEquipment = () => {
+    const val = newEquipmentInput.trim();
+    if (!val || equipmentList.includes(val)) return;
+    setEquipmentList([...equipmentList, val]);
+    setNewEquipmentInput('');
+  };
+
+  const handleRemoveEquipment = (indexToRemove: number) => {
+    setEquipmentList(equipmentList.filter((_, idx) => idx !== indexToRemove));
+  };
+
+  const handleSaveEquipment = async () => {
+    if (!session.creator) return;
+    try {
+      await updateCreatorProfile(session.creator.creatorId, { equipment: equipmentList });
+      setSettingsSuccessToast('Camera gear & equipment updated!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to update equipment');
+    }
+  };
+
+  const handleAddServiceArea = () => {
+    const val = newAreaInput.trim();
+    if (!val || serviceAreasList.includes(val)) return;
+    setServiceAreasList([...serviceAreasList, val]);
+    setNewAreaInput('');
+  };
+
+  const handleRemoveServiceArea = (indexToRemove: number) => {
+    setServiceAreasList(serviceAreasList.filter((_, idx) => idx !== indexToRemove));
+  };
+
+  const handleSaveServiceAreas = async () => {
+    if (!session.creator) return;
+    try {
+      await updateCreatorProfile(session.creator.creatorId, { serviceAreas: serviceAreasList });
+      setSettingsSuccessToast('Coverage locations updated!');
+      setTimeout(() => setSettingsSuccessToast(null), 3000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to update locations');
     }
   };
 
@@ -513,10 +1570,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         experienceYears: Number(settingsForm.experienceYears) || 1,
         city: settingsForm.city.trim(),
         district: settingsForm.district.trim(),
+        division: getDivisionForDistrict(settingsForm.district.trim()) || '',
         country: settingsForm.country.trim(),
-        serviceAreas: settingsForm.serviceAreas.split(',').map((s) => s.trim()).filter(Boolean),
-        skills: settingsForm.skills.split(',').map((s) => s.trim()).filter(Boolean),
-        equipment: settingsForm.equipment.split(',').map((s) => s.trim()).filter(Boolean),
+        serviceAreas: serviceAreasList,
+        skills: skillsList,
+        equipment: equipmentList,
         roles: settingsForm.roles,
         instagram: settingsForm.instagram.trim(),
         youtube: settingsForm.youtube.trim(),
@@ -527,8 +1585,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       };
 
       await updateCreatorProfile(session.creator.creatorId, payload);
-      setSettingsSuccessToast(true);
-      setTimeout(() => setSettingsSuccessToast(false), 4000);
+      setSettingsSuccessToast('Creator profile settings saved successfully!');
+      setTimeout(() => setSettingsSuccessToast(null), 4000);
     } catch (err: any) {
       alert(err.message || 'Failed to save settings');
     } finally {
@@ -642,13 +1700,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Filtered bookings
   const filteredBookings = bookings.filter((b) => {
-    const matchStatus = bookingFilterStatus === 'all' || b.status === bookingFilterStatus;
+    if (bookingFilterStatus === 'archived') {
+      if (!b.isArchived) return false;
+    } else if (bookingFilterStatus === 'cancelled') {
+      if (b.isArchived) return false;
+      if (b.status !== 'cancelled' && !b.isCancelled) return false;
+    } else {
+      if (b.isArchived) return false;
+      if (bookingFilterStatus !== 'all' && b.status !== bookingFilterStatus) return false;
+    }
     const matchQuery =
       !bookingSearchQuery ||
       b.projectTitle.toLowerCase().includes(bookingSearchQuery.toLowerCase()) ||
       (b.customerName && b.customerName.toLowerCase().includes(bookingSearchQuery.toLowerCase())) ||
       b.bookingId.toLowerCase().includes(bookingSearchQuery.toLowerCase());
-    return matchStatus && matchQuery;
+    return matchQuery;
   });
 
   // Calendar rendering helpers
@@ -680,6 +1746,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-xs font-bold text-white">Creator profile link copied to clipboard!</span>
         </div>
       )}
+
+      {/* 30-Day Account Deletion Grace Period Active Banner */}
+      {(session.user.accountStatus === 'PENDING_DELETION' || session.creator?.accountStatus === 'PENDING_DELETION') && (() => {
+        const scheduledTime = session.user.scheduledDeletionAt
+          ? new Date(session.user.scheduledDeletionAt).getTime()
+          : session.creator?.scheduledDeletionAt
+          ? new Date(session.creator.scheduledDeletionAt).getTime()
+          : 0;
+        const daysRemaining = scheduledTime
+          ? Math.max(0, Math.ceil((scheduledTime - Date.now()) / (24 * 60 * 60 * 1000)))
+          : 30;
+
+        return (
+          <div className="p-5 rounded-3xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-200 shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
+                    Account Scheduled for Permanent Deletion
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-black uppercase tracking-wider">
+                    {daysRemaining} Days Left in Grace Period
+                  </span>
+                </div>
+                <p className="text-xs text-amber-200/90 leading-relaxed max-w-2xl">
+                  Your profile and storefront are currently hidden from public search. Your data is safely held. You can cancel this deletion request and immediately reactivate your profile anytime before the 30-day window closes.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleCancelDeletion}
+              disabled={isCancellingDeletion}
+              className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition shadow-lg shadow-amber-500/20 shrink-0 disabled:opacity-50 flex items-center gap-2 justify-center"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${isCancellingDeletion ? 'animate-spin' : ''}`} />
+              <span>{isCancellingDeletion ? 'Restoring...' : 'Cancel Deletion & Restore'}</span>
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Top Profile Header Bar */}
       <div className="relative overflow-hidden p-6 sm:p-8 rounded-3xl bg-neutral-900 border border-neutral-800 shadow-2xl">
@@ -854,15 +1965,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
 
             <button
-              onClick={() => switchTab('messages')}
+              onClick={() => switchTab('services')}
               className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
-                activeTab === 'messages'
+                activeTab === 'services'
                   ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
               }`}
             >
-              <MessageSquare className="w-4 h-4" />
-              <span>Messages ({conversations.length})</span>
+              <Briefcase className="w-4 h-4" />
+              <span>Services &amp; Rates ({services.length})</span>
             </button>
 
             <button
@@ -887,6 +1998,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             >
               <HardDrive className="w-4 h-4" />
               <span>Portfolio Studio ({portfolio.length})</span>
+            </button>
+
+            <button
+              onClick={() => switchTab('messages')}
+              className={`px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 ${
+                activeTab === 'messages'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-500/25'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>Messages ({conversations.length})</span>
             </button>
 
             <button
@@ -923,61 +2046,114 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* ========================================================================= */}
       {activeTab === 'overview' && (
         <div className="space-y-8">
-          {/* Top 6 KPI Metric Cards */}
+          {/* Top 6 Actionable KPI Metric Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Total Bookings
-              </span>
-              <p className="text-2xl font-black text-white font-['Space_Grotesk']">{bookings.length}</p>
-              <span className="text-[10px] text-emerald-400 font-medium">All-time clients</span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Pending Requests
-              </span>
-              <p className="text-2xl font-black text-amber-400 font-['Space_Grotesk']">{pendingCount}</p>
-              <span className="text-[10px] text-neutral-400 font-medium">Awaiting response</span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Active Projects
-              </span>
-              <p className="text-2xl font-black text-emerald-400 font-['Space_Grotesk']">
-                {activeProjectsCount}
-              </p>
-              <span className="text-[10px] text-neutral-400 font-medium">In production</span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Total Reviews
-              </span>
-              <p className="text-2xl font-black text-white font-['Space_Grotesk']">{reviewsCount}</p>
-              <span className="text-[10px] text-neutral-400 font-medium">Client testimonials</span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Average Rating
-              </span>
-              <p className="text-2xl font-black text-amber-400 font-['Space_Grotesk'] flex items-center gap-1">
-                <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                {averageRating.toFixed(1)}
-              </p>
-              <span className="text-[10px] text-neutral-400 font-medium">Verified satisfaction</span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                Portfolio Items
-              </span>
-              <p className="text-2xl font-black text-white font-['Space_Grotesk']">{portfolio.length}</p>
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Total Bookings
+                </span>
+                <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-0.5">{bookings.length}</p>
+                <span className="text-[10px] text-emerald-400 font-medium">All-time clients</span>
+              </div>
               <button
+                type="button"
+                onClick={() => switchTab('bookings')}
+                className="text-[10px] text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1 pt-1"
+              >
+                <span>View Bookings</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Pending Requests
+                </span>
+                <p className="text-2xl font-black text-amber-400 font-['Space_Grotesk'] mt-0.5">{pendingCount}</p>
+                <span className="text-[10px] text-neutral-400 font-medium">Awaiting response</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => switchTab('bookings')}
+                className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 pt-1"
+              >
+                <span>Review Requests</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Active Projects
+                </span>
+                <p className="text-2xl font-black text-emerald-400 font-['Space_Grotesk'] mt-0.5">
+                  {activeProjectsCount}
+                </p>
+                <span className="text-[10px] text-neutral-400 font-medium">In production</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => switchTab('projects')}
+                className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 pt-1"
+              >
+                <span>Track Shoots</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Services Offered
+                </span>
+                <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-0.5">{services.length}</p>
+                <span className="text-[10px] text-sky-400 font-medium">Packages live</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => switchTab('services')}
+                className="text-[10px] text-sky-400 hover:text-sky-300 font-bold flex items-center gap-1 pt-1"
+              >
+                <span>Manage Rates</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Calendar Schedule
+                </span>
+                <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-0.5">
+                  {availability.length}
+                </p>
+                <span className="text-[10px] text-neutral-400 font-medium">Booked / Blocked</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => switchTab('availability')}
+                className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 pt-1"
+              >
+                <span>Set Dates</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                  Portfolio Works
+                </span>
+                <p className="text-2xl font-black text-white font-['Space_Grotesk'] mt-0.5">{portfolio.length}</p>
+                <span className="text-[10px] text-neutral-400 font-medium">Showcase items</span>
+              </div>
+              <button
+                type="button"
                 onClick={() => switchTab('portfolio')}
-                className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold flex items-center gap-1"
+                className="text-[10px] text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1 pt-1"
               >
                 <span>Manage Studio</span>
                 <ChevronRight className="w-3 h-3" />
@@ -1061,7 +2237,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 Accept
                               </button>
                               <button
-                                onClick={() => handleDeclineBooking(b.bookingId)}
+                                onClick={() => handleOpenDeclineModal(b.bookingId)}
                                 disabled={statusActionLoading === b.bookingId}
                                 className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold transition-colors"
                               >
@@ -1149,83 +2325,144 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Right Column: Quick Management & Status Feeds (1 col) */}
             <div className="space-y-6">
               {/* Profile Completion Checklist Card */}
-              <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
-                    Storefront Readiness
-                  </h3>
-                  <span className="text-xs font-mono font-bold text-emerald-400">
-                    {session.creator?.onboardingCompleted ? '100% Ready' : 'In Progress'}
-                  </span>
-                </div>
+              {(() => {
+                const checklistItems = [
+                  {
+                    id: 'avatar',
+                    label: 'Profile Avatar',
+                    isDone: Boolean(session.creator?.profileImageUrl || session.user.profileImage),
+                    actionLabel: session.creator?.profileImageUrl ? 'Update' : 'Add Photo',
+                    tab: 'settings',
+                  },
+                  {
+                    id: 'cover',
+                    label: 'Cover Banner',
+                    isDone: Boolean(session.creator?.coverImageUrl),
+                    actionLabel: session.creator?.coverImageUrl ? 'Update' : 'Add Cover',
+                    tab: 'settings',
+                  },
+                  {
+                    id: 'bio',
+                    label: 'Bio & Creative Vision',
+                    isDone: Boolean(session.creator?.bio && session.creator.bio.trim().length > 10),
+                    actionLabel: 'Edit Bio',
+                    tab: 'settings',
+                  },
+                  {
+                    id: 'price',
+                    label: 'Base Rate (৳ BDT)',
+                    isDone: Boolean((session.creator?.startingPrice || 0) > 0),
+                    actionLabel: 'Set Pricing',
+                    tab: 'settings',
+                  },
+                  {
+                    id: 'gear',
+                    label: 'Camera & Gear Specs',
+                    isDone: Boolean(equipmentList && equipmentList.length > 0),
+                    actionLabel: 'Edit Gear',
+                    tab: 'settings',
+                  },
+                  {
+                    id: 'services',
+                    label: `Services & Packages (${services.length})`,
+                    isDone: Boolean(services.length > 0),
+                    actionLabel: services.length > 0 ? 'Manage' : 'Add Service',
+                    tab: 'services',
+                  },
+                  {
+                    id: 'portfolio',
+                    label: `Portfolio Showcase (${portfolio.length})`,
+                    isDone: Boolean(portfolio.length > 0),
+                    actionLabel: portfolio.length > 0 ? 'Studio' : 'Upload Work',
+                    tab: 'portfolio',
+                  },
+                  {
+                    id: 'availability',
+                    label: 'Production Calendar',
+                    isDone: Boolean(availability.length > 0 || creatorAvailabilityStatus !== 'Unavailable'),
+                    actionLabel: 'Set Dates',
+                    tab: 'availability',
+                  },
+                ];
 
-                <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-rose-500 to-amber-400 rounded-full transition-all"
-                    style={{ width: `${Math.min(100, Math.max(40, portfolio.length * 15 + 40))}%` }}
-                  />
-                </div>
+                const completedCount = checklistItems.filter((i) => i.isDone).length;
+                const readinessPercentage = Math.round((completedCount / checklistItems.length) * 100);
 
-                <div className="space-y-2.5 text-xs">
-                  <div className="flex items-center justify-between text-neutral-300">
-                    <span className="flex items-center gap-2">
-                      <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      Visual Profile &amp; Bio
-                    </span>
-                    <span className="text-neutral-500 text-[10px]">Complete</span>
-                  </div>
+                return (
+                  <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-amber-400" />
+                        Storefront Readiness
+                      </h3>
+                      <span className="text-xs font-mono font-bold text-amber-400">
+                        {readinessPercentage}% Ready
+                      </span>
+                    </div>
 
-                  <div className="flex items-center justify-between text-neutral-300">
-                    <span className="flex items-center gap-2">
-                      <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      Camera &amp; Gear Specs
-                    </span>
-                    <span className="text-neutral-500 text-[10px]">Verified</span>
-                  </div>
+                    <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-emerald-400 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.max(12, readinessPercentage)}%` }}
+                      />
+                    </div>
 
-                  <div className="flex items-center justify-between text-neutral-300">
-                    <span className="flex items-center gap-2">
-                      {portfolio.length > 0 ? (
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      ) : (
-                        <div className="w-3.5 h-3.5 rounded-full border border-neutral-600" />
-                      )}
-                      Portfolio Works ({portfolio.length})
-                    </span>
+                    <p className="text-[11px] text-neutral-400">
+                      {completedCount} of {checklistItems.length} storefront items ready for client discovery.
+                    </p>
+
+                    <div className="space-y-2 pt-1">
+                      {checklistItems.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center justify-between p-2 rounded-xl bg-neutral-950/60 border border-neutral-800/80 hover:border-neutral-700/80 transition-colors text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {item.isDone ? (
+                              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                            ) : (
+                              <div className="w-4 h-4 rounded-full border-2 border-neutral-600 shrink-0" />
+                            )}
+                            <span className={`truncate font-medium ${item.isDone ? 'text-neutral-200' : 'text-neutral-400'}`}>
+                              {item.label}
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (item.id === 'portfolio' && portfolio.length === 0) {
+                                switchTab('portfolio');
+                                setShowUploadModal(true);
+                              } else if (item.id === 'services' && services.length === 0) {
+                                switchTab('services');
+                                handleOpenAddService();
+                              } else {
+                                switchTab(item.tab);
+                              }
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors shrink-0 ${
+                              item.isDone
+                                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                                : 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30'
+                            }`}
+                          >
+                            {item.actionLabel}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
                     <button
-                      onClick={() => switchTab('portfolio')}
-                      className="text-rose-400 hover:underline text-[10px]"
+                      onClick={() => switchTab('settings')}
+                      className="w-full py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 mt-2"
                     >
-                      Manage
+                      <SettingsIcon className="w-3.5 h-3.5 text-neutral-400" />
+                      <span>Edit Creator Settings</span>
                     </button>
                   </div>
-
-                  <div className="flex items-center justify-between text-neutral-300">
-                    <span className="flex items-center gap-2">
-                      {availability.length > 0 ? (
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      ) : (
-                        <div className="w-3.5 h-3.5 rounded-full border border-neutral-600" />
-                      )}
-                      Calendar Availability
-                    </span>
-                    <button
-                      onClick={() => switchTab('availability')}
-                      className="text-amber-400 hover:underline text-[10px]"
-                    >
-                      Update
-                    </button>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => switchTab('settings')}
-                  className="w-full py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-colors flex items-center justify-center gap-2"
-                >
-                  <SettingsIcon className="w-3.5 h-3.5 text-neutral-400" />
-                  <span>Edit Creator Settings</span>
-                </button>
-              </div>
+                );
+              })()}
 
               {/* Quick Actions Panel */}
               <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-3">
@@ -1346,12 +2583,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {/* Filter Pills */}
           <div className="flex gap-2 overflow-x-auto pb-1 text-xs">
             {[
-              { id: 'all', label: `All (${bookings.length})` },
-              { id: 'pending', label: `New Requests (${bookings.filter((b) => b.status === 'pending').length})` },
-              { id: 'accepted', label: `Accepted (${bookings.filter((b) => b.status === 'accepted').length})` },
-              { id: 'confirmed', label: `Confirmed (${bookings.filter((b) => b.status === 'confirmed').length})` },
-              { id: 'completed', label: `Completed (${bookings.filter((b) => b.status === 'completed').length})` },
-              { id: 'declined', label: `Declined (${bookings.filter((b) => b.status === 'declined').length})` },
+              { id: 'all', label: `All (${bookings.filter((b) => !b.isArchived).length})` },
+              { id: 'pending', label: `New Requests (${bookings.filter((b) => !b.isArchived && b.status === 'pending').length})` },
+              { id: 'accepted', label: `Accepted (${bookings.filter((b) => !b.isArchived && b.status === 'accepted').length})` },
+              { id: 'confirmed', label: `Confirmed (${bookings.filter((b) => !b.isArchived && b.status === 'confirmed').length})` },
+              { id: 'completed', label: `Completed (${bookings.filter((b) => !b.isArchived && b.status === 'completed').length})` },
+              { id: 'declined', label: `Declined (${bookings.filter((b) => !b.isArchived && b.status === 'declined').length})` },
+              { id: 'cancelled', label: `Cancelled (${bookings.filter((b) => !b.isArchived && (b.status === 'cancelled' || b.isCancelled)).length})` },
+              { id: 'archived', label: `Archived (${bookings.filter((b) => b.isArchived).length})` },
             ].map((f) => (
               <button
                 key={f.id}
@@ -1398,7 +2637,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         onClick={() => onViewPublicProfile(session.creator!.username)}
                         className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white"
                       >
-                        View Storefront
+                        Preview Storefront
                       </button>
                     )}
                   </>
@@ -1435,13 +2674,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {filteredBookings.map((b) => (
                 <div
                   key={b.bookingId}
-                  className="p-5 rounded-3xl bg-neutral-900 border border-neutral-800 hover:border-neutral-700 transition-all space-y-4 flex flex-col justify-between"
+                  className={`p-5 rounded-3xl bg-neutral-900 border transition-all space-y-4 flex flex-col justify-between ${
+                    b.isArchived
+                      ? 'border-neutral-800/60 opacity-80 bg-neutral-900/40'
+                      : 'border-neutral-800 hover:border-neutral-700'
+                  }`}
                 >
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <span className="text-[10px] font-mono font-bold text-neutral-500 uppercase">
-                          {b.bookingId} • {b.projectType || 'Creative Production'}
+                        <span className="text-[10px] font-mono font-bold text-neutral-500 uppercase flex items-center gap-1.5">
+                          <span>{b.bookingId} • {b.projectType || 'Creative Production'}</span>
+                          {b.isArchived && (
+                            <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 text-[9px] uppercase font-bold">
+                              Archived
+                            </span>
+                          )}
                         </span>
                         <h4 className="text-base font-bold text-white mt-0.5">{b.projectTitle}</h4>
                       </div>
@@ -1455,10 +2703,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
                             : b.status === 'completed'
                             ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                            : b.status === 'cancelled' || b.isCancelled
+                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                             : 'bg-neutral-800 text-neutral-400'
                         }`}
                       >
-                        {b.status}
+                        {b.status === 'cancelled' || b.isCancelled ? 'Cancelled' : b.status}
                       </span>
                     </div>
 
@@ -1483,6 +2733,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           "{b.message}"
                         </p>
                       )}
+
+                      {/* Google Calendar Sync Status on Confirmed Shoot */}
+                      {b.status === 'confirmed' && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-800/80">
+                          {b.calendarSyncStatus === 'synced' ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              <span>Google Calendar Synced</span>
+                            </span>
+                          ) : b.calendarSyncStatus === 'failed' ? (
+                            <div className="flex items-center gap-2">
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1.5">
+                                <AlertTriangle className="w-3 h-3 text-rose-400" />
+                                <span>Calendar Sync Failed</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleRetryCalendarSync(b.bookingId)}
+                                disabled={retryingBookingId === b.bookingId}
+                                className="px-2 py-0.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-[10px] font-bold flex items-center gap-1 transition disabled:opacity-50"
+                              >
+                                <RotateCcw className={`w-3 h-3 ${retryingBookingId === b.bookingId ? 'animate-spin' : ''}`} />
+                                <span>Retry Sync</span>
+                              </button>
+                            </div>
+                          ) : session.creator?.calendarConnected ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-neutral-800 text-neutral-400 border border-neutral-700 flex items-center gap-1.5">
+                              <CalendarIcon className="w-3 h-3 text-neutral-400" />
+                              <span>Syncing to Google Calendar...</span>
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1495,7 +2778,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       View Details
                     </button>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         onClick={() => openClientMessage(b.customerId, b.customerName)}
                         className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-sky-400 transition-colors flex items-center gap-1.5"
@@ -1504,7 +2787,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span>Message Client</span>
                       </button>
 
-                      {b.status === 'pending' && isCreator && (
+                      {/* Pending Lifecycle Actions */}
+                      {b.status === 'pending' && isCreator && !b.isArchived && (
                         <>
                           <button
                             onClick={() => handleAcceptBooking(b.bookingId)}
@@ -1514,7 +2798,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             Accept
                           </button>
                           <button
-                            onClick={() => handleDeclineBooking(b.bookingId)}
+                            onClick={() => handleOpenDeclineModal(b.bookingId)}
                             disabled={statusActionLoading === b.bookingId}
                             className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold transition-colors"
                           >
@@ -1523,16 +2807,222 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </>
                       )}
 
-                      {b.status === 'accepted' && isCreator && (
-                        <button
-                          onClick={() => handleConfirmBooking(b.bookingId)}
-                          disabled={statusActionLoading === b.bookingId}
-                          className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors"
-                        >
-                          Confirm Shoot
-                        </button>
+                      {/* Accepted Lifecycle Actions */}
+                      {b.status === 'accepted' && isCreator && !b.isArchived && (
+                        <>
+                          <button
+                            onClick={() => handleConfirmBooking(b.bookingId)}
+                            disabled={statusActionLoading === b.bookingId}
+                            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors"
+                          >
+                            Confirm Shoot
+                          </button>
+                          <button
+                            onClick={() => handleOpenCancelModal(b)}
+                            className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-rose-300 text-xs font-semibold transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      )}
+
+                      {/* Confirmed Lifecycle Actions */}
+                      {b.status === 'confirmed' && isCreator && !b.isArchived && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenRescheduleModal(b)}
+                            className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition-colors flex items-center gap-1.5"
+                          >
+                            <CalendarIcon className="w-3.5 h-3.5" />
+                            <span>Reschedule</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMarkBookingCompleted(b.bookingId)}
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors"
+                          >
+                            Complete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCancelModal(b)}
+                            className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-rose-300 text-xs font-semibold transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      )}
+
+                      {/* Archive / Restore / Delete Button */}
+                      {b.isArchived ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreBooking(b)}
+                            className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-emerald-400 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Restore</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteBooking(b)}
+                            className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                            title="Delete booking permanently from database"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {(b.status === 'completed' || b.status === 'declined' || b.status === 'cancelled' || b.isCancelled) && (
+                            <button
+                              type="button"
+                              onClick={() => handleArchiveBooking(b)}
+                              className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white text-xs font-semibold transition-colors flex items-center gap-1.5"
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>Archive</span>
+                            </button>
+                          )}
+                          {(b.status === 'cancelled' || b.isCancelled || b.status === 'declined') && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBooking(b)}
+                              className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                              title="Delete booking permanently from database"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: SERVICES & PACKAGES MANAGEMENT                                       */}
+      {/* ========================================================================= */}
+      {activeTab === 'services' && isCreator && (
+        <div className="space-y-6">
+          <div className="p-5 sm:p-6 rounded-3xl bg-neutral-900 border border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                  Services &amp; Rates
+                </span>
+                <span className="text-xs text-neutral-400">Bangladeshi Taka (৳ BDT)</span>
+              </div>
+              <h2 className="text-xl font-black text-white font-['Space_Grotesk']">
+                Creative Services &amp; Packages
+              </h2>
+              <p className="text-xs text-neutral-400 max-w-2xl">
+                Define the shoot tiers, deliverables, turnaround schedules, and base rates clients can book directly.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleOpenAddService}
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg flex items-center gap-2 self-start sm:self-auto"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add New Service</span>
+            </button>
+          </div>
+
+          {services.length === 0 ? (
+            <div className="text-center py-16 bg-neutral-900/60 rounded-3xl border border-neutral-800 p-8 space-y-4">
+              <Briefcase className="w-12 h-12 text-neutral-600 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">No Services Published Yet</h3>
+                <p className="text-xs text-neutral-400 max-w-md mx-auto">
+                  Publish packages like "Full Day Wedding Cinematography", "Commercial Lookbook Shoot", or "Color Grading & Master Delivery" so clients can book you with transparent pricing.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={handleOpenAddService}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-lg shadow-rose-500/20 inline-flex items-center gap-2"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Create First Service</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {services.map((service) => (
+                <div
+                  key={service.serviceId}
+                  className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 hover:border-neutral-700 transition-all flex flex-col justify-between space-y-4 shadow-xl"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase bg-neutral-950 text-neutral-300 border border-neutral-800">
+                        {service.category || 'Production'}
+                      </span>
+                      <span className="text-base font-black text-amber-400 font-mono">
+                        ৳{(service.startingPrice || 0).toLocaleString()} BDT
+                      </span>
+                    </div>
+
+                    <h4 className="text-base font-bold text-white font-['Space_Grotesk']">
+                      {service.title}
+                    </h4>
+
+                    {service.description && (
+                      <p className="text-xs text-neutral-300 leading-relaxed bg-neutral-950/80 p-3 rounded-2xl border border-neutral-800/80">
+                        {service.description}
+                      </p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                      <div className="p-2.5 rounded-xl bg-neutral-950/50 border border-neutral-800/80 space-y-0.5">
+                        <span className="text-[10px] text-neutral-500 uppercase font-bold block">Turnaround</span>
+                        <span className="text-neutral-200 font-medium flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-400" />
+                          {service.deliveryTime || '14 Days'}
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-neutral-950/50 border border-neutral-800/80 space-y-0.5">
+                        <span className="text-[10px] text-neutral-500 uppercase font-bold block">Coverage</span>
+                        <span className="text-neutral-200 font-medium truncate flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-rose-400" />
+                          {service.location || 'On-Location'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-neutral-800 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditService(service)}
+                      className="px-3.5 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold transition flex items-center gap-1.5"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Edit Service</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteServiceWithConfirm(service)}
+                      className="px-3.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 font-bold transition flex items-center gap-1.5 border border-rose-500/20"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1667,6 +3157,189 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="px-3 py-1 rounded-xl bg-neutral-950 text-xs font-mono font-bold text-white border border-neutral-800">
                 {selectedDate}
               </span>
+            </div>
+          </div>
+
+          {/* ========================================================================= */}
+          {/* INDIVIDUAL GOOGLE CALENDAR SYNCHRONIZATION CARD                            */}
+          {/* ========================================================================= */}
+          <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-neutral-800/80">
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-blue-500/20 to-sky-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0 shadow-inner">
+                  <CalendarIcon className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
+                      Personal Google Calendar Integration
+                    </h3>
+                    {session.creator?.calendarConnected ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>Connected &amp; Active</span>
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-neutral-800 text-neutral-400 border border-neutral-700">
+                        Not Connected
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-0.5">
+                    Individual calendar sync for confirmed production shoots, schedules &amp; time blocks
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-2">
+                {session.creator?.calendarConnected ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleSyncGoogleCalendarNow}
+                      disabled={isSyncingCalendarNow}
+                      className="px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs flex items-center gap-1.5 transition disabled:opacity-50"
+                    >
+                      <RotateCcw className={`w-3.5 h-3.5 text-blue-400 ${isSyncingCalendarNow ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingCalendarNow ? 'Syncing...' : 'Sync Now'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleDisconnectGoogleCalendarWithConfirm}
+                      className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-rose-500/20 text-neutral-400 hover:text-rose-300 font-bold text-xs flex items-center gap-1.5 border border-neutral-800 transition"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Disconnect</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCalendarEmailInput(session.creator?.calendarEmail || session.user.email || '');
+                      setShowConnectCalendarModal(true);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold text-xs flex items-center gap-1.5 transition shadow-lg shadow-blue-500/20"
+                  >
+                    <Link className="w-3.5 h-3.5" />
+                    <span>Connect Google Calendar</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Calendar details or setup nudge */}
+            {session.creator?.calendarConnected ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
+                <div className="p-3 rounded-2xl bg-neutral-950/70 border border-neutral-800/80 space-y-0.5">
+                  <span className="text-[10px] text-neutral-500 uppercase font-bold block">
+                    Syncing Target Email
+                  </span>
+                  <span className="text-white font-mono font-medium truncate block">
+                    {session.creator?.calendarEmail || session.user.email}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-neutral-950/70 border border-neutral-800/80 space-y-0.5">
+                  <span className="text-[10px] text-neutral-500 uppercase font-bold block">
+                    Last Full Synchronization
+                  </span>
+                  <span className="text-neutral-300 font-medium block">
+                    {session.creator?.calendarLastSyncAt
+                      ? new Date(session.creator.calendarLastSyncAt).toLocaleString([], {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Active & Real-Time'}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-neutral-950/70 border border-neutral-800/80 space-y-0.5">
+                  <span className="text-[10px] text-neutral-500 uppercase font-bold block">
+                    Sync Features Active
+                  </span>
+                  <span className="text-emerald-400 font-medium block">
+                    Auto-Events, Conflict Block &amp; Reschedule
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 rounded-2xl bg-neutral-950/60 border border-neutral-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="space-y-1">
+                  <p className="font-bold text-neutral-200">
+                    Why synchronize your Google Calendar?
+                  </p>
+                  <p className="text-neutral-400 text-[11px] leading-relaxed max-w-2xl">
+                    Whenever you confirm a shoot on CreatorFlow, an event is automatically scheduled in your Google Calendar with client contacts, shoot location, budget (৳ BDT), and brief notes. Rescheduling or cancelling updates your Google Calendar instantly.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCalendarEmailInput(session.creator?.calendarEmail || session.user.email || '');
+                    setShowConnectCalendarModal(true);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-bold transition shrink-0 self-start sm:self-auto"
+                >
+                  Setup Calendar Sync
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Quick Availability Status Selector */}
+          <div className="p-5 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-rose-400" />
+                  Storefront Availability Status
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  Clients browsing your profile see this live badge on your cards and calendar.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleSaveAvailabilityStatus(creatorAvailabilityStatus)}
+                disabled={isSavingAvailabilityStatus}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs flex items-center gap-1.5 transition disabled:opacity-50 shadow-md shadow-rose-500/20 shrink-0"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{isSavingAvailabilityStatus ? 'Saving...' : 'Save Availability Status'}</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+              {[
+                { id: 'Available', label: 'Available for Shoots', desc: 'Accepting new bookings', color: 'border-emerald-500 bg-emerald-500/10 text-emerald-300' },
+                { id: 'Limited', label: 'Limited Availability', desc: 'Few dates remaining', color: 'border-amber-500 bg-amber-500/10 text-amber-300' },
+                { id: 'Busy', label: 'Busy / In Production', desc: 'Heavy shooting schedule', color: 'border-purple-500 bg-purple-500/10 text-purple-300' },
+                { id: 'Unavailable', label: 'Unavailable / Offline', desc: 'Not taking inquiries', color: 'border-rose-500 bg-rose-500/10 text-rose-300' },
+              ].map((st) => (
+                <div
+                  key={st.id}
+                  onClick={() => setCreatorAvailabilityStatus(st.id as any)}
+                  className={`p-3.5 rounded-2xl cursor-pointer transition-all border ${
+                    creatorAvailabilityStatus === st.id
+                      ? `${st.color} shadow-lg ring-1 ring-white/10`
+                      : 'border-neutral-800 bg-neutral-950/80 hover:border-neutral-700 text-neutral-400'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-white">{st.label}</span>
+                    {creatorAvailabilityStatus === st.id && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-current shrink-0" />
+                    )}
+                  </div>
+                  <p className="text-[10px] text-neutral-400 mt-1">{st.desc}</p>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -1809,14 +3482,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                 {availability.some((a) => a.date === selectedDate && a.status === 'unavailable') ? (
                   <div className="space-y-3">
-                    <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
-                      This date is currently marked as <strong>Blocked / Unavailable</strong>.
+                    <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs space-y-1">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>Date Currently Blocked / Unavailable</span>
+                      </p>
+                      <p className="text-[11px] text-rose-300/80">
+                        Clients browsing your profile see this date marked as unavailable for shoots.
+                      </p>
                     </div>
                     <button
-                      onClick={() => handleUnblockDate(selectedDate)}
-                      className="w-full py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-colors"
+                      type="button"
+                      onClick={() => handleUnblockDateWithConfirm(selectedDate)}
+                      className="w-full py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition-colors flex items-center justify-center gap-2"
                     >
-                      Unblock &amp; Mark Available
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Remove Blackout Date</span>
                     </button>
                   </div>
                 ) : (
@@ -1824,18 +3505,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <p className="text-xs text-neutral-400">
                       This date is open for new bookings. You can block it off for personal time or private shoots.
                     </p>
-                    <input
-                      type="text"
-                      value={blockNotesInput}
-                      onChange={(e) => setBlockNotesInput(e.target.value)}
-                      placeholder="Reason (e.g. Travel, Commercial shoot)"
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
-                    />
+                    <div>
+                      <label className="block text-[11px] font-bold text-neutral-400 mb-1">
+                        Blackout Reason / Notes
+                      </label>
+                      <input
+                        type="text"
+                        value={blockNotesInput}
+                        onChange={(e) => setBlockNotesInput(e.target.value)}
+                        placeholder="Reason (e.g. Travel, Commercial shoot)"
+                        className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
                     <button
+                      type="button"
                       onClick={handleBlockSelectedDate}
-                      className="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition-colors"
+                      disabled={isBlockingDate}
+                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 shadow-md shadow-rose-500/20 disabled:opacity-50"
                     >
-                      Block Selected Date
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>{isBlockingDate ? 'Saving...' : 'Save Blackout Date'}</span>
                     </button>
                   </div>
                 )}
@@ -1843,30 +3532,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               {/* Blocked Dates Management List */}
               <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
-                <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
-                  Blocked Dates ({availability.filter((a) => a.status === 'unavailable').length})
-                </h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-white font-['Space_Grotesk']">
+                    Blocked Dates ({availability.filter((a) => a.status === 'unavailable').length})
+                  </h3>
+                  <span className="text-[10px] text-neutral-500 font-medium">Production blackout</span>
+                </div>
 
                 {availability.filter((a) => a.status === 'unavailable').length === 0 ? (
-                  <p className="text-xs text-neutral-500 py-3 text-center">No blackout dates configured</p>
+                  <div className="text-center py-6 bg-neutral-950/40 rounded-2xl border border-neutral-800/80 p-4">
+                    <Clock className="w-6 h-6 text-neutral-600 mx-auto mb-1.5" />
+                    <p className="text-xs text-neutral-400">No blackout dates configured</p>
+                    <p className="text-[10px] text-neutral-600">All calendar dates are open for shoot inquiries</p>
+                  </div>
                 ) : (
-                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1 no-scrollbar">
                     {availability
                       .filter((a) => a.status === 'unavailable')
                       .map((slot) => (
                         <div
                           key={slot.availabilityId || slot.date}
-                          className="p-3 rounded-xl bg-neutral-950 border border-neutral-800/80 flex items-center justify-between text-xs"
+                          className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800/80 flex items-center justify-between text-xs hover:border-neutral-700 transition"
                         >
                           <div>
                             <p className="font-bold text-white font-mono">{slot.date}</p>
                             <p className="text-[10px] text-neutral-400">{slot.notes || 'Blocked out'}</p>
                           </div>
                           <button
-                            onClick={() => handleUnblockDate(slot.date)}
-                            className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-rose-500/20 hover:text-rose-400 text-[10px] font-semibold text-neutral-300 transition-colors"
+                            type="button"
+                            onClick={() => handleUnblockDateWithConfirm(slot.date)}
+                            className="px-2.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-rose-500/20 text-neutral-400 hover:text-rose-300 text-[10px] font-bold transition flex items-center gap-1 border border-neutral-800"
+                            title="Remove blackout date"
                           >
-                            Unblock
+                            <Trash2 className="w-3 h-3" />
+                            <span>Remove Date</span>
                           </button>
                         </div>
                       ))}
@@ -2025,18 +3724,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             setUploadCustomUrl(item.fileUrl);
                             setShowUploadModal(true);
                           }}
-                          className="text-neutral-400 hover:text-white flex items-center gap-1 font-semibold"
+                          className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white flex items-center gap-1.5 font-semibold text-xs transition-colors"
                         >
-                          <Edit2 className="w-3.5 h-3.5" />
-                          <span>Edit</span>
+                          <Edit2 className="w-3.5 h-3.5 text-neutral-400" />
+                          <span>Edit Work</span>
                         </button>
 
                         <button
-                          onClick={() => handleDeletePortfolioItem(item.portfolioId)}
-                          className="text-neutral-500 hover:text-rose-400 flex items-center gap-1 font-semibold transition-colors"
+                          onClick={() => handleDeletePortfolioItemWithConfirm(item)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 flex items-center gap-1.5 font-semibold text-xs transition-colors border border-rose-500/20"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>Delete</span>
+                          <span>Delete Work</span>
                         </button>
                       </div>
                     </div>
@@ -2165,6 +3864,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {/* Conversation Actions */}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleArchiveConversation(activeConversationId)}
+                        className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition"
+                        title="Archive Conversation"
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteConversation(activeConversationId)}
+                        className="p-1.5 rounded-lg bg-neutral-800 hover:bg-rose-500/20 text-neutral-400 hover:text-rose-300 transition"
+                        title="Delete Conversation"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Messages bubble stream */}
@@ -2177,7 +3896,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       chatMessages.map((m) => {
                         const isMe = m.senderId === session.user.userId;
                         return (
-                          <div key={m.messageId} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                          <div key={m.messageId} className={`flex items-end gap-1.5 group ${isMe ? 'justify-end' : 'justify-start'}`}>
+                            {isMe && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteMessage(m.messageId)}
+                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-neutral-500 hover:text-rose-400 transition"
+                                title="Delete Message"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
                             <div
                               className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-xs space-y-1 ${
                                 isMe
@@ -2264,13 +3993,158 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </p>
             </div>
 
-            <button
-              type="submit"
-              disabled={isSavingSettings}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg shadow-rose-500/20 disabled:opacity-50"
-            >
-              {isSavingSettings ? 'Saving...' : 'Save Profile Changes'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (session.creator) {
+                    setSettingsForm({
+                      displayName: session.creator.displayName || session.user.fullName || '',
+                      username: session.creator.username || '',
+                      bio: session.creator.bio || '',
+                      startingPrice: session.creator.startingPrice || 0,
+                      experienceYears: session.creator.experienceYears || 1,
+                      city: session.creator.city || 'Dhaka',
+                      district: session.creator.district || '',
+                      country: session.creator.country || 'Bangladesh',
+                      phone: session.user.phone || '',
+                      roles: session.creator.roles || ['Photographer'],
+                      instagram: session.creator.instagram || '',
+                      youtube: session.creator.youtube || '',
+                      facebook: session.creator.facebook || '',
+                      tiktok: session.creator.tiktok || '',
+                      linkedin: session.creator.linkedin || '',
+                      website: session.creator.website || '',
+                    });
+                    setSkillsList(session.creator.skills || []);
+                    setEquipmentList(session.creator.equipment || []);
+                    setServiceAreasList(session.creator.serviceAreas || []);
+                    setSettingsSuccessToast('Reverted unsaved profile changes.');
+                    setTimeout(() => setSettingsSuccessToast(null), 2500);
+                  }
+                }}
+                className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-semibold text-xs transition"
+              >
+                Discard
+              </button>
+
+              <button
+                type="submit"
+                disabled={isSavingSettings}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg shadow-rose-500/20 disabled:opacity-50"
+              >
+                {isSavingSettings ? 'Saving...' : 'Save Profile Changes'}
+              </button>
+            </div>
+          </div>
+
+          {/* Visual Assets & Photos Management */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Profile Avatar Card */}
+            <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                    <UserIcon className="w-4 h-4 text-rose-400" />
+                    Profile Avatar
+                  </h3>
+                  <p className="text-xs text-neutral-400">Square photo recommended (min 400x400)</p>
+                </div>
+                {session.creator?.profileImageUrl && (
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                    Custom Photo Active
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-5 pt-2">
+                <SafeAvatar
+                  src={session.creator?.profileImageUrl || session.user.profileImage}
+                  name={session.creator?.displayName || session.user.fullName}
+                  className="w-20 h-20 rounded-2xl ring-2 ring-neutral-700 shadow-xl shrink-0"
+                  size={600}
+                />
+                <div className="space-y-2 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload &amp; Adjust Photo</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleSelectProfilePhotoFile}
+                        className="hidden"
+                      />
+                    </label>
+
+                    {(session.creator?.profileImageUrl || session.user.profileImage) && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveProfilePhotoWithConfirm}
+                        className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-rose-500/20 text-neutral-400 hover:text-rose-300 font-bold text-xs flex items-center gap-1.5 border border-neutral-800 transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove Photo</span>
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-neutral-500">
+                    JPG, PNG or WebP. Interactive crop &amp; zoom preview included.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Cover Banner Card */}
+            <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-amber-400" />
+                    Cover Banner
+                  </h3>
+                  <p className="text-xs text-neutral-400">Storefront header background (16:9 or 3:1)</p>
+                </div>
+                {session.creator?.coverImageUrl && (
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                    Custom Banner Active
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-3 pt-1">
+                <div className="h-20 w-full rounded-2xl overflow-hidden bg-neutral-950 relative border border-neutral-800">
+                  <SafeCover
+                    src={session.creator?.coverImageUrl}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs flex items-center gap-1.5 transition border border-neutral-700">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload &amp; Reposition Banner</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleSelectCoverPhotoFile}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {session.creator?.coverImageUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveCoverPhotoWithConfirm}
+                      className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-rose-500/20 text-neutral-400 hover:text-rose-300 font-bold text-xs flex items-center gap-1.5 border border-neutral-800 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove Banner</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2335,30 +4209,130 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 mb-1">
-                  Primary Equipment &amp; Cameras (comma separated)
-                </label>
-                <input
-                  type="text"
-                  value={settingsForm.equipment}
-                  onChange={(e) => setSettingsForm({ ...settingsForm, equipment: e.target.value })}
-                  placeholder="Sony FX6, Red Komodo, Aputure 600d, DJI Ronin RS3"
-                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
-                />
+              {/* Skills Interactive Tag Manager */}
+              <div className="pt-2 border-t border-neutral-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-neutral-300">
+                    Creative Skills ({skillsList.length})
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleSaveSkills}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1"
+                  >
+                    <Check className="w-3 h-3" />
+                    <span>Save Skills</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 min-h-[32px] p-2 rounded-xl bg-neutral-950 border border-neutral-800">
+                  {skillsList.map((skill, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 flex items-center gap-1.5"
+                    >
+                      <span>{skill}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveSkill(idx)}
+                        className="text-neutral-500 hover:text-rose-400"
+                        title="Delete skill"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                  {skillsList.length === 0 && (
+                    <span className="text-neutral-500 text-xs italic">No skills added yet</span>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newSkillInput}
+                    onChange={(e) => setNewSkillInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddSkill();
+                      }
+                    }}
+                    placeholder="Add skill (e.g. Color Grading, RAW 4K, Drone)"
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddSkill}
+                    className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add</span>
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 mb-1">
-                  Creative Skills (comma separated)
-                </label>
-                <input
-                  type="text"
-                  value={settingsForm.skills}
-                  onChange={(e) => setSettingsForm({ ...settingsForm, skills: e.target.value })}
-                  placeholder="Color Grading, Drone Aerials, Fashion Directing, 4K Raw"
-                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
-                />
+              {/* Equipment Interactive Tag Manager */}
+              <div className="pt-2 border-t border-neutral-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-neutral-300">
+                    Cameras &amp; Equipment Specs ({equipmentList.length})
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleSaveEquipment}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1"
+                  >
+                    <Check className="w-3 h-3" />
+                    <span>Save Equipment</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 min-h-[32px] p-2 rounded-xl bg-neutral-950 border border-neutral-800">
+                  {equipmentList.map((eq, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 flex items-center gap-1.5"
+                    >
+                      <span>{eq}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveEquipment(idx)}
+                        className="text-neutral-500 hover:text-rose-400"
+                        title="Delete equipment item"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                  {equipmentList.length === 0 && (
+                    <span className="text-neutral-500 text-xs italic">No equipment listed</span>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newEquipmentInput}
+                    onChange={(e) => setNewEquipmentInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddEquipment();
+                      }
+                    }}
+                    placeholder="Add gear (e.g. Sony FX3, Aputure 600d, DJI RS3)"
+                    className="flex-1 px-3 py-1.5 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddEquipment}
+                    className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2370,40 +4344,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   Location &amp; Service Coverage
                 </h3>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-neutral-400 mb-1">City *</label>
-                    <input
-                      type="text"
-                      required
-                      value={settingsForm.city}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, city: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-neutral-400 mb-1">Country *</label>
-                    <input
-                      type="text"
-                      required
-                      value={settingsForm.country}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, country: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-neutral-400 mb-1">
-                    Service Areas Covered (comma separated)
-                  </label>
-                  <input
-                    type="text"
-                    value={settingsForm.serviceAreas}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, serviceAreas: e.target.value })}
-                    placeholder="Dhaka, Chittagong, Sylhet, Nationwide"
-                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
+                {/* Primary District Selection */}
+                <div className="space-y-4">
+                  <BangladeshLocationSelect
+                    mode="single"
+                    value={settingsForm.district || settingsForm.city}
+                    onChange={(val) => {
+                      const dist = val as string;
+                      setSettingsForm({ ...settingsForm, district: dist, city: dist });
+                    }}
+                    label="Primary District / Base City *"
+                    placeholder="Search all 64 districts (e.g. Dhaka, Chittagong, Sylhet)..."
                   />
+
+                  {/* Service Coverage Locations across 8 Divisions / All Bangladesh */}
+                  <div className="pt-2 border-t border-neutral-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-neutral-400">
+                        Select individual districts or choose Nationwide Coverage
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleSaveServiceAreas}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Save Coverage</span>
+                      </button>
+                    </div>
+
+                    <BangladeshLocationSelect
+                      mode="multiple"
+                      value={serviceAreasList}
+                      onChange={(areas) => setServiceAreasList(areas as string[])}
+                      label={`Service Coverage Locations (${serviceAreasList.length})`}
+                      placeholder="Search 64 districts or pick entire division..."
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -2455,6 +4432,79 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       className="w-full px-3 py-1.5 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none"
                     />
                   </div>
+                </div>
+              </div>
+
+              {/* Bottom Action Footer */}
+              <div className="p-4 rounded-3xl bg-neutral-900 border border-neutral-800 flex items-center justify-between gap-4">
+                <span className="text-xs text-neutral-400 font-medium">
+                  Review and save all profile information
+                </span>
+
+                <button
+                  type="submit"
+                  disabled={isSavingSettings}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg shadow-rose-500/20 disabled:opacity-50"
+                >
+                  {isSavingSettings ? 'Saving...' : 'Save Profile Changes'}
+                </button>
+              </div>
+
+              {/* Account & Security (Facebook-Style Deletion Lifecycle) */}
+              <div className="p-6 rounded-3xl bg-neutral-900 border border-neutral-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-white font-['Space_Grotesk'] flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-rose-400" />
+                      Account &amp; Security
+                    </h3>
+                    <p className="text-xs text-neutral-400">
+                      Manage account status, privacy settings, and data lifecycle
+                    </p>
+                  </div>
+                  {session.user.accountStatus === 'PENDING_DELETION' ? (
+                    <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                      Deletion Pending
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+                      Active Account
+                    </span>
+                  )}
+                </div>
+
+                <div className="p-4 rounded-2xl bg-neutral-950 border border-neutral-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1 max-w-xl">
+                    <h4 className="text-xs font-bold text-neutral-200">
+                      {session.user.accountStatus === 'PENDING_DELETION' ? 'Account Scheduled for Deletion' : 'Delete Account (Facebook-Style 30-Day Grace Period)'}
+                    </h4>
+                    <p className="text-[11px] text-neutral-400 leading-relaxed">
+                      {session.user.accountStatus === 'PENDING_DELETION'
+                        ? 'Your account deletion request is active. You can cancel this request at any time within the 30-day window to reactivate your storefront.'
+                        : 'Schedule your account for permanent removal. Your storefront and services will be hidden immediately, with a 30-day window to cancel and restore your profile anytime.'}
+                    </p>
+                  </div>
+
+                  {session.user.accountStatus === 'PENDING_DELETION' ? (
+                    <button
+                      type="button"
+                      onClick={handleCancelDeletion}
+                      disabled={isCancellingDeletion}
+                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition shrink-0 flex items-center gap-1.5"
+                    >
+                      <RotateCcw className={`w-3.5 h-3.5 ${isCancellingDeletion ? 'animate-spin' : ''}`} />
+                      <span>{isCancellingDeletion ? 'Restoring...' : 'Cancel Deletion'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteAccountModal(true)}
+                      className="px-4 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/30 text-xs font-bold transition shrink-0 flex items-center gap-1.5"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Account</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -3102,9 +5152,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="submit"
                   disabled={isUploading}
-                  className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold disabled:opacity-50"
+                  className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {isUploading ? 'Saving...' : editingPortfolioItem ? 'Update Work' : 'Save to Studio'}
+                  <Save className="w-3.5 h-3.5" />
+                  <span>
+                    {isUploading ? 'Saving...' : editingPortfolioItem ? 'Save Portfolio Changes' : 'Save Portfolio Item'}
+                  </span>
                 </button>
               </div>
             </form>
@@ -3516,6 +5569,680 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               >
                 <span>View Public Profile</span>
                 <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* CONFIRMATION DIALOG (CENTRAL FOR ALL DESTRUCTIVE ACTIONS)                  */}
+      {/* ========================================================================= */}
+      {confirmDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-5 shadow-2xl">
+            <div className="flex items-start gap-3.5">
+              <div
+                className={`p-3 rounded-2xl shrink-0 ${
+                  confirmDialog.variant === 'danger'
+                    ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                    : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                }`}
+              >
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-lg font-black text-white font-['Space_Grotesk']">
+                  {confirmDialog.title}
+                </h3>
+                <p className="text-xs text-neutral-300 leading-relaxed">
+                  {confirmDialog.description}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold text-white transition ${
+                  confirmDialog.variant === 'danger'
+                    ? 'bg-rose-600 hover:bg-rose-500'
+                    : 'bg-amber-600 hover:bg-amber-500'
+                }`}
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* DECLINE BOOKING REQUEST MODAL                                             */}
+      {/* ========================================================================= */}
+      {declineBookingModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-rose-500/15 text-rose-400 border border-rose-500/30 shrink-0">
+                <XCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  Decline Booking Request
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  Are you sure you want to decline booking <span className="font-mono text-neutral-200">#{declineBookingModal.bookingId}</span>? Let the client know the reason so they can adjust dates or project requirements.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-300">
+                Reason for Declining (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={declineBookingModal.reason}
+                onChange={(e) =>
+                  setDeclineBookingModal((prev) => ({ ...prev, reason: e.target.value }))
+                }
+                placeholder="e.g. Already booked for a shoot on this date, or location is outside my current service area..."
+                className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() =>
+                  setDeclineBookingModal({ isOpen: false, bookingId: '', reason: '' })
+                }
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Keep Request
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeclineBooking}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition"
+              >
+                Decline Booking
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* ADD / EDIT CREATIVE SERVICE MODAL                                         */}
+      {/* ========================================================================= */}
+      {serviceModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-lg bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <Briefcase className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  {serviceModal.mode === 'create' ? 'Add Creative Service' : 'Edit Service Offering'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setServiceModal((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 max-h-[70vh] overflow-y-auto pr-1">
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1">
+                  Service Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={serviceForm.title}
+                  onChange={(e) => setServiceForm({ ...serviceForm, title: e.target.value })}
+                  placeholder="e.g. Cinematic Wedding Highlights & 4K Teaser"
+                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    Category *
+                  </label>
+                  <select
+                    value={serviceForm.category}
+                    onChange={(e) => setServiceForm({ ...serviceForm, category: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-rose-500"
+                  >
+                    <option value="Cinematography">Cinematography</option>
+                    <option value="Photography">Photography</option>
+                    <option value="Editing">Editing &amp; Color Grading</option>
+                    <option value="Commercial">Commercial &amp; Ad Shoot</option>
+                    <option value="Aerial Drone">Aerial Drone Footage</option>
+                    <option value="Fashion">Fashion &amp; Lookbook</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    Starting Price (৳ BDT) *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-amber-400">
+                      ৳
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={serviceForm.startingPrice}
+                      onChange={(e) =>
+                        setServiceForm({ ...serviceForm, startingPrice: Number(e.target.value) })
+                      }
+                      placeholder="25000"
+                      className="w-full pl-7 pr-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    Delivery Turnaround
+                  </label>
+                  <input
+                    type="text"
+                    value={serviceForm.deliveryTime}
+                    onChange={(e) => setServiceForm({ ...serviceForm, deliveryTime: e.target.value })}
+                    placeholder="e.g. 7 Days or 48 Hours Express"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    Coverage Location
+                  </label>
+                  <input
+                    type="text"
+                    value={serviceForm.location}
+                    onChange={(e) => setServiceForm({ ...serviceForm, location: e.target.value })}
+                    placeholder="e.g. Dhaka Studio / On-Location"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1">
+                  Service Description *
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={serviceForm.description}
+                  onChange={(e) => setServiceForm({ ...serviceForm, description: e.target.value })}
+                  placeholder="Detail your creative workflow, direction style, and gear brought to the production..."
+                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1">
+                  Key Deliverables (comma separated)
+                </label>
+                <input
+                  type="text"
+                  value={serviceForm.deliverables}
+                  onChange={(e) => setServiceForm({ ...serviceForm, deliverables: e.target.value })}
+                  placeholder="e.g. 1x 4K Master Video, 10x 60s Reels, Full Color Grade, Raw Footage Backup"
+                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+                />
+                <span className="text-[10px] text-neutral-500 mt-1 block">
+                  Separate each item with a comma so clients see an organized bullet list.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setServiceModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingService || !serviceForm.title.trim()}
+                onClick={handleSaveService}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>
+                  {isSavingService
+                    ? 'Saving...'
+                    : serviceModal.mode === 'create'
+                    ? 'Save Service'
+                    : 'Save Changes'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* CONNECT GOOGLE CALENDAR MODAL                                             */}
+      {/* ========================================================================= */}
+      {showConnectCalendarModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                  <CalendarIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                    Connect Google Calendar
+                  </h3>
+                  <p className="text-[11px] text-neutral-400">Personal schedule synchronization</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowConnectCalendarModal(false)}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              <p className="text-neutral-300 leading-relaxed bg-neutral-950 p-3 rounded-2xl border border-neutral-800">
+                Enter your Google account email address. Once linked, any booking confirmed by you will automatically appear on your Google Calendar with client info, production location, and shoot timings.
+              </p>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1">
+                  Google Account Email *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={calendarEmailInput}
+                  onChange={(e) => setCalendarEmailInput(e.target.value)}
+                  placeholder="e.g. yourname@gmail.com"
+                  className="w-full px-3.5 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-200 space-y-1">
+                <p className="font-bold flex items-center gap-1 text-blue-300">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Automatic Synchronization Features:</span>
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-blue-300/80 pl-1">
+                  <li>Instant calendar event on booking confirmation</li>
+                  <li>Shoot date, hours &amp; venue details pre-filled</li>
+                  <li>Auto-updates on shoot reschedule or cancellation</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setShowConnectCalendarModal(false)}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isConnectingCalendar || !calendarEmailInput.trim()}
+                onClick={handleConnectGoogleCalendar}
+                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Link className="w-3.5 h-3.5" />
+                <span>{isConnectingCalendar ? 'Connecting...' : 'Authorize & Connect'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* RESCHEDULE BOOKING MODAL                                                  */}
+      {/* ========================================================================= */}
+      {rescheduleModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  Reschedule Shoot
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRescheduleModal((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              <p className="text-neutral-400">
+                Updating shoot schedule for: <strong className="text-white">{rescheduleModal.booking?.projectTitle}</strong>
+              </p>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-300 mb-1">
+                  New Shoot Date *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={rescheduleModal.eventDate}
+                  onChange={(e) =>
+                    setRescheduleModal((prev) => ({ ...prev, eventDate: e.target.value }))
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    Start Time
+                  </label>
+                  <input
+                    type="time"
+                    value={rescheduleModal.startTime}
+                    onChange={(e) =>
+                      setRescheduleModal((prev) => ({ ...prev, startTime: e.target.value }))
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1">
+                    End Time
+                  </label>
+                  <input
+                    type="time"
+                    value={rescheduleModal.endTime}
+                    onChange={(e) =>
+                      setRescheduleModal((prev) => ({ ...prev, endTime: e.target.value }))
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <p className="text-[11px] text-neutral-500 italic">
+                The linked Google Calendar event will automatically move to this new time.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setRescheduleModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={rescheduleModal.isSaving || !rescheduleModal.eventDate}
+                onClick={handleSaveReschedule}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5 text-black" />
+                <span>{rescheduleModal.isSaving ? 'Rescheduling...' : 'Save New Schedule'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* CANCEL BOOKING MODAL                                                      */}
+      {/* ========================================================================= */}
+      {cancelBookingModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-rose-500/15 text-rose-400 border border-rose-500/30 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  Cancel Booking
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  Cancel shoot <strong className="text-white">{cancelBookingModal.booking?.projectTitle}</strong>. The linked Google Calendar event will be removed and client records preserved.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-300">
+                Cancellation Reason (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={cancelBookingModal.reason}
+                onChange={(e) =>
+                  setCancelBookingModal((prev) => ({ ...prev, reason: e.target.value }))
+                }
+                placeholder="Reason for cancellation (e.g. client requested change, production conflict)..."
+                className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setCancelBookingModal({ isOpen: false, booking: null, reason: '', isCancelling: false })}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Keep Booking
+              </button>
+              <button
+                type="button"
+                disabled={cancelBookingModal.isCancelling}
+                onClick={handleConfirmCancelBooking}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition disabled:opacity-50"
+              >
+                {cancelBookingModal.isCancelling ? 'Cancelling...' : 'Cancel Booking'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* FACEBOOK-STYLE PROFILE PHOTO CROP & ZOOM MODAL                            */}
+      {/* ========================================================================= */}
+      {profileCropModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <UserIcon className="w-5 h-5 text-rose-400" />
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  Adjust Profile Photo
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileCropModal((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Circular Preview Container */}
+            <div className="flex flex-col items-center justify-center py-4 space-y-4">
+              <div className="w-48 h-48 rounded-full overflow-hidden border-4 border-rose-500/50 shadow-2xl bg-neutral-950 relative flex items-center justify-center">
+                <img
+                  src={profileCropModal.previewUrl}
+                  alt="Avatar preview"
+                  className="w-full h-full object-cover transition-transform duration-200"
+                  style={{ transform: `scale(${profileCropModal.zoom})` }}
+                />
+              </div>
+
+              {/* Zoom Slider */}
+              <div className="w-full max-w-xs space-y-1.5 pt-2">
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <span className="flex items-center gap-1">
+                    <ZoomOut className="w-3.5 h-3.5" />
+                    <span>Zoom</span>
+                  </span>
+                  <span className="font-mono font-bold text-white">
+                    {Math.round(profileCropModal.zoom * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="2.5"
+                  step="0.05"
+                  value={profileCropModal.zoom}
+                  onChange={(e) =>
+                    setProfileCropModal((prev) => ({ ...prev, zoom: parseFloat(e.target.value) }))
+                  }
+                  className="w-full accent-rose-500 cursor-pointer"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setProfileCropModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={profileCropModal.isUploading}
+                onClick={handleSaveCroppedProfilePhoto}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{profileCropModal.isUploading ? 'Saving...' : 'Save Profile Photo'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* FACEBOOK-STYLE COVER BANNER REPOSITION MODAL                               */}
+      {/* ========================================================================= */}
+      {coverRepositionModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-lg bg-neutral-900 border border-neutral-800 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <ImageIcon className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-white font-['Space_Grotesk']">
+                  Reposition Cover Banner
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCoverRepositionModal((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Banner 16:9 Widescreen Preview with Alignment */}
+            <div className="space-y-3">
+              <div className="w-full h-44 rounded-2xl overflow-hidden border-2 border-neutral-700 bg-neutral-950 relative shadow-xl">
+                <img
+                  src={coverRepositionModal.previewUrl}
+                  alt="Cover preview"
+                  className={`w-full h-full object-cover transition-all duration-300 ${
+                    coverRepositionModal.position === 'top'
+                      ? 'object-top'
+                      : coverRepositionModal.position === 'bottom'
+                      ? 'object-bottom'
+                      : 'object-center'
+                  }`}
+                />
+              </div>
+
+              {/* Alignment Selector */}
+              <div className="flex items-center justify-center gap-2 pt-2">
+                <span className="text-xs text-neutral-400 font-semibold mr-2 flex items-center gap-1">
+                  <Sliders className="w-3.5 h-3.5 text-neutral-400" />
+                  <span>Alignment:</span>
+                </span>
+                {(['top', 'center', 'bottom'] as const).map((pos) => (
+                  <button
+                    key={pos}
+                    type="button"
+                    onClick={() => setCoverRepositionModal((prev) => ({ ...prev, position: pos }))}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold capitalize transition ${
+                      coverRepositionModal.position === pos
+                        ? 'bg-amber-500 text-black shadow-md shadow-amber-500/25'
+                        : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    {pos}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setCoverRepositionModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={coverRepositionModal.isUploading}
+                onClick={handleSaveRepositionedCoverPhoto}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5 text-black" />
+                <span>{coverRepositionModal.isUploading ? 'Saving...' : 'Save Cover Banner'}</span>
               </button>
             </div>
           </div>

@@ -18,6 +18,8 @@ import {
   ApiResponse,
   AuthSession,
   GuestInquiryRecord,
+  AccountDeletionStatus,
+  AdminDeletionRecord,
 } from '../types';
 import {
   MOCK_USERS,
@@ -286,6 +288,7 @@ export async function login(email: string, password: string): Promise<AuthSessio
           token: res.data.sessionToken,
           user: res.data.user,
           creator: res.data.creatorProfile,
+          deletionCancelledNotice: Boolean(res.data.deletionCancelledNotice),
         };
       }
       throw new Error(res.message || 'Incorrect email or password.');
@@ -307,9 +310,28 @@ export async function login(email: string, password: string): Promise<AuthSessio
   const creator = creators.find((c) => c.userId === user.userId);
   const token = 'DEMO-TOKEN-' + user.userId;
 
+  let deletionCancelledNotice = false;
+  if (user.accountStatus === 'PENDING_DELETION') {
+    user.accountStatus = 'ACTIVE';
+    user.deletionCancelledAt = new Date().toISOString();
+    deletionCancelledNotice = true;
+    setLocalDemoState(
+      STORAGE_KEYS.DEMO_USERS,
+      users.map((u) => (u.userId === user.userId ? user : u))
+    );
+    if (creator) {
+      creator.accountStatus = 'ACTIVE';
+      creator.availabilityStatus = 'Available';
+      setLocalDemoState(
+        STORAGE_KEYS.DEMO_CREATORS,
+        creators.map((c) => (c.creatorId === creator.creatorId ? creator : c))
+      );
+    }
+  }
+
   saveSession(token, user, creator);
   linkGuestInquiriesToUser(user);
-  return { token, user, creator };
+  return { token, user, creator, deletionCancelledNotice };
 }
 
 export async function logout(): Promise<void> {
@@ -1039,6 +1061,38 @@ export async function createService(creatorId: string, data: Partial<Service>): 
   return newService;
 }
 
+export async function updateService(
+  serviceId: string,
+  data: Partial<Service>
+): Promise<Service> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Service>('POST', 'updateService', { serviceId, ...data });
+      if (res.success && res.data) return res.data;
+    } catch (e) {}
+  }
+  const all = getLocalDemoState<Service[]>(STORAGE_KEYS.DEMO_SERVICES, MOCK_SERVICES);
+  const updated = all.map((s) =>
+    s.serviceId === serviceId ? { ...s, ...data, updatedAt: new Date().toISOString() } : s
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_SERVICES, updated);
+  const found = updated.find((s) => s.serviceId === serviceId);
+  if (!found) throw new Error('Service not found');
+  return found;
+}
+
+export async function deleteService(serviceId: string): Promise<void> {
+  if (isLiveBackendConfigured()) {
+    try {
+      await callAppsScript('POST', 'deleteService', { serviceId });
+      return;
+    } catch (e) {}
+  }
+  const all = getLocalDemoState<Service[]>(STORAGE_KEYS.DEMO_SERVICES, MOCK_SERVICES);
+  const updated = all.filter((s) => s.serviceId !== serviceId);
+  setLocalDemoState(STORAGE_KEYS.DEMO_SERVICES, updated);
+}
+
 export async function getCreatorPackages(creatorId: string, serviceId?: string): Promise<PackageItem[]> {
   if (isLiveBackendConfigured()) {
     try {
@@ -1081,6 +1135,38 @@ export async function createPackage(creatorId: string, data: Partial<PackageItem
   };
   setLocalDemoState(STORAGE_KEYS.DEMO_PACKAGES, [...all, newPkg]);
   return newPkg;
+}
+
+export async function updatePackage(
+  packageId: string,
+  data: Partial<PackageItem>
+): Promise<PackageItem> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<PackageItem>('POST', 'updatePackage', { packageId, ...data });
+      if (res.success && res.data) return res.data;
+    } catch (e) {}
+  }
+  const all = getLocalDemoState<PackageItem[]>(STORAGE_KEYS.DEMO_PACKAGES, MOCK_PACKAGES);
+  const updated = all.map((p) =>
+    p.packageId === packageId ? { ...p, ...data, updatedAt: new Date().toISOString() } : p
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_PACKAGES, updated);
+  const found = updated.find((p) => p.packageId === packageId);
+  if (!found) throw new Error('Package not found');
+  return found;
+}
+
+export async function deletePackage(packageId: string): Promise<void> {
+  if (isLiveBackendConfigured()) {
+    try {
+      await callAppsScript('POST', 'deletePackage', { packageId });
+      return;
+    } catch (e) {}
+  }
+  const all = getLocalDemoState<PackageItem[]>(STORAGE_KEYS.DEMO_PACKAGES, MOCK_PACKAGES);
+  const updated = all.filter((p) => p.packageId !== packageId);
+  setLocalDemoState(STORAGE_KEYS.DEMO_PACKAGES, updated);
 }
 
 // ----------------------------------------------------
@@ -1977,4 +2063,758 @@ export async function adminSetFeaturedCreator(creatorId: string, featured: boole
 
   return updated;
 }
+
+// ----------------------------------------------------
+// Google Calendar Synchronization (Per-Freelancer)
+// ----------------------------------------------------
+export async function connectGoogleCalendar(
+  creatorId: string,
+  data: { email: string; calendarId?: string }
+): Promise<Creator> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'connectGoogleCalendar', { creatorId, ...data });
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script connectGoogleCalendar failed, fallback');
+    }
+  }
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const updated = creators.map((c) =>
+    c.creatorId === creatorId
+      ? {
+          ...c,
+          calendarConnected: true,
+          calendarEmail: data.email,
+          calendarId: data.calendarId || data.email,
+          calendarConnectedAt: new Date().toISOString(),
+          calendarLastSyncAt: new Date().toISOString(),
+          calendarSyncStatus: 'connected' as const,
+          updatedAt: new Date().toISOString(),
+        }
+      : c
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_CREATORS, updated);
+  const target = updated.find((c) => c.creatorId === creatorId)!;
+  syncLocalSessionWithCreatorUpdate(target);
+  return target;
+}
+
+export async function disconnectGoogleCalendar(creatorId: string): Promise<Creator> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'disconnectGoogleCalendar', { creatorId });
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script disconnectGoogleCalendar failed, fallback');
+    }
+  }
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const updated = creators.map((c) =>
+    c.creatorId === creatorId
+      ? {
+          ...c,
+          calendarConnected: false,
+          calendarEmail: '',
+          calendarId: '',
+          calendarSyncStatus: 'disconnected' as const,
+          updatedAt: new Date().toISOString(),
+        }
+      : c
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_CREATORS, updated);
+  const target = updated.find((c) => c.creatorId === creatorId)!;
+  syncLocalSessionWithCreatorUpdate(target);
+  return target;
+}
+
+export async function syncGoogleCalendarNow(
+  creatorId: string
+): Promise<{ success: boolean; syncedCount: number; totalConfirmed: number; lastSyncAt: string }> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<{ success: boolean; syncedCount: number; totalConfirmed: number; lastSyncAt: string }>(
+        'POST',
+        'syncGoogleCalendarNow',
+        { creatorId }
+      );
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script syncGoogleCalendarNow failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const confirmed = bookings.filter((b) => b.creatorId === creatorId && b.status === 'confirmed' && !b.isArchived);
+  const now = new Date().toISOString();
+
+  const updatedBookings = bookings.map((b) => {
+    if (b.creatorId === creatorId && b.status === 'confirmed' && !b.isArchived) {
+      return {
+        ...b,
+        calendarEventId: b.calendarEventId || `CAL-EVENT-${b.bookingId}`,
+        calendarSyncStatus: 'synced' as const,
+        calendarSyncedAt: now,
+        calendarSyncError: undefined,
+      };
+    }
+    return b;
+  });
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updatedBookings);
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const updatedCreators = creators.map((c) =>
+    c.creatorId === creatorId ? { ...c, calendarLastSyncAt: now, calendarSyncStatus: 'connected' as const } : c
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_CREATORS, updatedCreators);
+  const target = updatedCreators.find((c) => c.creatorId === creatorId);
+  if (target) syncLocalSessionWithCreatorUpdate(target);
+
+  return {
+    success: true,
+    syncedCount: confirmed.length,
+    totalConfirmed: confirmed.length,
+    lastSyncAt: now,
+  };
+}
+
+export async function retryCalendarSync(bookingId: string): Promise<Booking> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Booking>('POST', 'retryCalendarSync', { bookingId });
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script retryCalendarSync failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const now = new Date().toISOString();
+  const updated = bookings.map((b) =>
+    b.bookingId === bookingId
+      ? {
+          ...b,
+          calendarEventId: b.calendarEventId || `CAL-EVENT-${b.bookingId}`,
+          calendarSyncStatus: 'synced' as const,
+          calendarSyncedAt: now,
+          calendarSyncError: undefined,
+          updatedAt: now,
+        }
+      : b
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+  return updated.find((b) => b.bookingId === bookingId)!;
+}
+
+// ----------------------------------------------------
+// Booking Lifecycle (Reschedule, Cancel, Archive, Restore)
+// ----------------------------------------------------
+export async function rescheduleBooking(
+  bookingId: string,
+  data: { eventDate: string; startTime?: string; endTime?: string }
+): Promise<Booking> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Booking>('POST', 'rescheduleBooking', { bookingId, ...data });
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script rescheduleBooking failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const now = new Date().toISOString();
+  const updated = bookings.map((b) =>
+    b.bookingId === bookingId
+      ? {
+          ...b,
+          eventDate: data.eventDate,
+          startTime: data.startTime || b.startTime,
+          endTime: data.endTime || b.endTime,
+          calendarSyncStatus: b.calendarEventId ? ('synced' as const) : b.calendarSyncStatus,
+          calendarSyncedAt: b.calendarEventId ? now : b.calendarSyncedAt,
+          updatedAt: now,
+        }
+      : b
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+
+  // Update availability slot
+  const availability = getLocalDemoState<Availability[]>(STORAGE_KEYS.DEMO_AVAILABILITY, MOCK_AVAILABILITY);
+  const updatedAvail = availability.map((a) =>
+    a.bookingId === bookingId
+      ? { ...a, date: data.eventDate, startTime: data.startTime || a.startTime, endTime: data.endTime || a.endTime, updatedAt: now }
+      : a
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_AVAILABILITY, updatedAvail);
+
+  return updated.find((b) => b.bookingId === bookingId)!;
+}
+
+export async function cancelBooking(bookingId: string, reason?: string): Promise<Booking> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Booking>('POST', 'cancelBooking', { bookingId, reason });
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script cancelBooking failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const now = new Date().toISOString();
+  const updated = bookings.map((b) =>
+    b.bookingId === bookingId
+      ? {
+          ...b,
+          status: 'cancelled' as const,
+          isCancelled: true,
+          cancelledAt: now,
+          cancellationReason: reason || 'Cancelled by user',
+          updatedAt: now,
+        }
+      : b
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+
+  // Remove availability slot so the date is freed
+  const availability = getLocalDemoState<Availability[]>(STORAGE_KEYS.DEMO_AVAILABILITY, MOCK_AVAILABILITY);
+  setLocalDemoState(
+    STORAGE_KEYS.DEMO_AVAILABILITY,
+    availability.filter((a) => a.bookingId !== bookingId)
+  );
+
+  return updated.find((b) => b.bookingId === bookingId)!;
+}
+
+export async function archiveBooking(bookingId: string): Promise<Booking> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Booking>('POST', 'archiveBooking', { bookingId });
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script archiveBooking failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const now = new Date().toISOString();
+  const updated = bookings.map((b) =>
+    b.bookingId === bookingId
+      ? { ...b, isArchived: true, archivedAt: now, updatedAt: now }
+      : b
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+  return updated.find((b) => b.bookingId === bookingId)!;
+}
+
+export async function restoreBooking(bookingId: string): Promise<Booking> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Booking>('POST', 'restoreBooking', { bookingId });
+      if (res.success && res.data) return res.data;
+    } catch (e) {
+      console.warn('Apps Script restoreBooking failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const now = new Date().toISOString();
+  const updated = bookings.map((b) =>
+    b.bookingId === bookingId
+      ? { ...b, isArchived: false, updatedAt: now }
+      : b
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+  return updated.find((b) => b.bookingId === bookingId)!;
+}
+
+// ----------------------------------------------------
+// Messaging Management (Delete & Archive)
+// ----------------------------------------------------
+export async function deleteConversation(conversationId: string): Promise<void> {
+  if (isLiveBackendConfigured()) {
+    try {
+      await callAppsScript('POST', 'deleteConversation', { conversationId });
+      return;
+    } catch (e) {
+      console.warn('Apps Script deleteConversation failed, fallback');
+    }
+  }
+
+  const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  const now = new Date().toISOString();
+  const updated = messages.map((m) =>
+    m.conversationId === conversationId || (`CONV-${[m.senderId, m.receiverId].sort().join('-')}` === conversationId)
+      ? { ...m, isDeleted: true, deletedAt: now }
+      : m
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, updated);
+}
+
+export async function archiveConversation(conversationId: string): Promise<boolean> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<{ success: boolean; isArchived: boolean }>('POST', 'archiveConversation', { conversationId });
+      if (res.success) return res.data?.isArchived ?? true;
+    } catch (e) {
+      console.warn('Apps Script archiveConversation failed, fallback');
+    }
+  }
+
+  const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  const convMsgs = messages.filter(
+    (m) => m.conversationId === conversationId || (`CONV-${[m.senderId, m.receiverId].sort().join('-')}` === conversationId)
+  );
+  const targetArchived = convMsgs.length > 0 && convMsgs[0].isArchived ? false : true;
+  const updated = messages.map((m) =>
+    m.conversationId === conversationId || (`CONV-${[m.senderId, m.receiverId].sort().join('-')}` === conversationId)
+      ? { ...m, isArchived: targetArchived }
+      : m
+  );
+  setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, updated);
+  return targetArchived;
+}
+
+export async function deleteMessage(messageId: string): Promise<void> {
+  if (isLiveBackendConfigured()) {
+    try {
+      await callAppsScript('POST', 'deleteMessage', { messageId });
+      return;
+    } catch (e) {
+      console.warn('Apps Script deleteMessage failed, fallback');
+    }
+  }
+
+  const messages = getLocalDemoState<Message[]>(STORAGE_KEYS.DEMO_MESSAGES, MOCK_MESSAGES);
+  const now = new Date().toISOString();
+  const updated = messages.map((m) => (m.messageId === messageId ? { ...m, isDeleted: true, deletedAt: now } : m));
+  setLocalDemoState(STORAGE_KEYS.DEMO_MESSAGES, updated);
+}
+
+// ----------------------------------------------------
+// Photo Management (Facebook-Style Profile & Cover)
+// ----------------------------------------------------
+export async function updateProfilePhoto(
+  creatorId: string,
+  urlOrBase64: string,
+  fileName?: string,
+  zoom?: number
+): Promise<Creator> {
+  const isBase64 = urlOrBase64.startsWith('data:');
+  const payload: any = { creatorId };
+  if (isBase64) {
+    payload.base64Data = urlOrBase64;
+    payload.fileName = fileName || 'profile_avatar.jpg';
+    if (zoom !== undefined) payload.zoom = zoom;
+  } else {
+    payload.url = urlOrBase64;
+  }
+
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'updateProfilePhoto', payload);
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script updateProfilePhoto failed, fallback');
+    }
+  }
+
+  return await updateCreatorProfile(creatorId, { profileImageUrl: urlOrBase64 });
+}
+
+export async function removeProfilePhoto(creatorId: string): Promise<Creator> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'removeProfilePhoto', { creatorId });
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script removeProfilePhoto failed, fallback');
+    }
+  }
+
+  return await updateCreatorProfile(creatorId, { profileImageUrl: '' });
+}
+
+export async function updateCoverPhoto(
+  creatorId: string,
+  urlOrBase64: string,
+  fileName?: string,
+  position?: 'top' | 'center' | 'bottom'
+): Promise<Creator> {
+  const isBase64 = urlOrBase64.startsWith('data:');
+  const payload: any = { creatorId };
+  if (isBase64) {
+    payload.base64Data = urlOrBase64;
+    payload.fileName = fileName || 'cover_banner.jpg';
+    if (position) payload.position = position;
+  } else {
+    payload.url = urlOrBase64;
+  }
+
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'updateCoverPhoto', payload);
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script updateCoverPhoto failed, fallback');
+    }
+  }
+
+  return await updateCreatorProfile(creatorId, { coverImageUrl: urlOrBase64 });
+}
+
+export async function removeCoverPhoto(creatorId: string): Promise<Creator> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<Creator>('POST', 'removeCoverPhoto', { creatorId });
+      if (res.success && res.data) {
+        syncLocalSessionWithCreatorUpdate(res.data);
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Apps Script removeCoverPhoto failed, fallback');
+    }
+  }
+
+  return await updateCreatorProfile(creatorId, { coverImageUrl: '' });
+}
+
+// ----------------------------------------------------
+// Booking Permanent Deletion
+// ----------------------------------------------------
+export async function deleteBooking(bookingId: string): Promise<boolean> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<{ success: boolean; bookingId: string }>('POST', 'deleteBooking', { bookingId });
+      if (res.success) {
+        const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+        setLocalDemoState(
+          STORAGE_KEYS.DEMO_BOOKINGS,
+          bookings.filter((b) => b.bookingId !== bookingId)
+        );
+        return true;
+      }
+    } catch (e) {
+      console.warn('Apps Script deleteBooking failed, fallback');
+    }
+  }
+
+  const bookings = getLocalDemoState<Booking[]>(STORAGE_KEYS.DEMO_BOOKINGS, MOCK_BOOKINGS);
+  const updated = bookings.filter((b) => b.bookingId !== bookingId);
+  setLocalDemoState(STORAGE_KEYS.DEMO_BOOKINGS, updated);
+  return true;
+}
+
+// ----------------------------------------------------
+// Facebook-Style 30-Day Account Deletion Lifecycle
+// ----------------------------------------------------
+export async function requestAccountDeletion(
+  password?: string,
+  reason?: string,
+  isGoogleReauthConfirmed?: boolean
+): Promise<AccountDeletionStatus> {
+  const session = getStoredSession();
+  if (!session) throw new Error('Authentication required');
+
+  if (isLiveBackendConfigured()) {
+    const res = await callAppsScript<any>('POST', 'requestAccountDeletion', {
+      password,
+      reason,
+      isGoogleReauthConfirmed,
+      confirmed: true,
+    });
+    if (res.success && res.data) {
+      const updatedUser: User = {
+        ...session.user,
+        accountStatus: 'PENDING_DELETION',
+        deletionRequestedAt: res.data.deletionRequestedAt,
+        scheduledDeletionAt: res.data.scheduledDeletionAt,
+        deletionReason: reason,
+      };
+      const updatedCreator: Creator | undefined = session.creator
+        ? {
+            ...session.creator,
+            accountStatus: 'PENDING_DELETION',
+            deletionRequestedAt: res.data.deletionRequestedAt,
+            scheduledDeletionAt: res.data.scheduledDeletionAt,
+            deletionReason: reason,
+            availabilityStatus: 'Unavailable',
+          }
+        : undefined;
+
+      saveSession(session.token, updatedUser, updatedCreator);
+      return {
+        accountStatus: 'PENDING_DELETION',
+        isPendingDeletion: true,
+        deletionRequestedAt: res.data.deletionRequestedAt,
+        scheduledDeletionAt: res.data.scheduledDeletionAt,
+        deletionReason: reason,
+        daysRemaining: res.data.daysRemaining || 30,
+      };
+    }
+    throw new Error(res.message || 'Failed to request account deletion');
+  }
+
+  // Demo fallback
+  const now = new Date();
+  const scheduled = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const nowIso = now.toISOString();
+  const scheduledIso = scheduled.toISOString();
+
+  const users = getLocalDemoState<User[]>(STORAGE_KEYS.DEMO_USERS, MOCK_USERS);
+  setLocalDemoState(
+    STORAGE_KEYS.DEMO_USERS,
+    users.map((u) =>
+      u.userId === session.user.userId
+        ? {
+            ...u,
+            accountStatus: 'PENDING_DELETION',
+            deletionRequestedAt: nowIso,
+            scheduledDeletionAt: scheduledIso,
+            deletionReason: reason,
+          }
+        : u
+    )
+  );
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  setLocalDemoState(
+    STORAGE_KEYS.DEMO_CREATORS,
+    creators.map((c) =>
+      c.userId === session.user.userId
+        ? {
+            ...c,
+            accountStatus: 'PENDING_DELETION',
+            deletionRequestedAt: nowIso,
+            scheduledDeletionAt: scheduledIso,
+            deletionReason: reason,
+            availabilityStatus: 'Unavailable',
+          }
+        : c
+    )
+  );
+
+  const updatedUser: User = {
+    ...session.user,
+    accountStatus: 'PENDING_DELETION',
+    deletionRequestedAt: nowIso,
+    scheduledDeletionAt: scheduledIso,
+    deletionReason: reason,
+  };
+  const updatedCreator: Creator | undefined = session.creator
+    ? {
+        ...session.creator,
+        accountStatus: 'PENDING_DELETION',
+        deletionRequestedAt: nowIso,
+        scheduledDeletionAt: scheduledIso,
+        deletionReason: reason,
+        availabilityStatus: 'Unavailable',
+      }
+    : undefined;
+
+  saveSession(session.token, updatedUser, updatedCreator);
+
+  return {
+    accountStatus: 'PENDING_DELETION',
+    isPendingDeletion: true,
+    deletionRequestedAt: nowIso,
+    scheduledDeletionAt: scheduledIso,
+    deletionReason: reason,
+    daysRemaining: 30,
+  };
+}
+
+export async function cancelAccountDeletion(): Promise<{ success: boolean; accountStatus: string }> {
+  const session = getStoredSession();
+  if (!session) throw new Error('Authentication required');
+
+  if (isLiveBackendConfigured()) {
+    const res = await callAppsScript<any>('POST', 'cancelAccountDeletion');
+    if (res.success) {
+      const now = new Date().toISOString();
+      const updatedUser: User = {
+        ...session.user,
+        accountStatus: 'ACTIVE',
+        deletionCancelledAt: now,
+      };
+      const updatedCreator: Creator | undefined = session.creator
+        ? {
+            ...session.creator,
+            accountStatus: 'ACTIVE',
+            deletionCancelledAt: now,
+            availabilityStatus: 'Available',
+          }
+        : undefined;
+
+      saveSession(session.token, updatedUser, updatedCreator);
+      return { success: true, accountStatus: 'ACTIVE' };
+    }
+    throw new Error(res.message || 'Failed to cancel account deletion');
+  }
+
+  // Demo fallback
+  const now = new Date().toISOString();
+  const users = getLocalDemoState<User[]>(STORAGE_KEYS.DEMO_USERS, MOCK_USERS);
+  setLocalDemoState(
+    STORAGE_KEYS.DEMO_USERS,
+    users.map((u) =>
+      u.userId === session.user.userId
+        ? {
+            ...u,
+            accountStatus: 'ACTIVE',
+            deletionCancelledAt: now,
+          }
+        : u
+    )
+  );
+
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  setLocalDemoState(
+    STORAGE_KEYS.DEMO_CREATORS,
+    creators.map((c) =>
+      c.userId === session.user.userId
+        ? {
+            ...c,
+            accountStatus: 'ACTIVE',
+            deletionCancelledAt: now,
+            availabilityStatus: 'Available',
+          }
+        : c
+    )
+  );
+
+  const updatedUser: User = {
+    ...session.user,
+    accountStatus: 'ACTIVE',
+    deletionCancelledAt: now,
+  };
+  const updatedCreator: Creator | undefined = session.creator
+    ? {
+        ...session.creator,
+        accountStatus: 'ACTIVE',
+        deletionCancelledAt: now,
+        availabilityStatus: 'Available',
+      }
+    : undefined;
+
+  saveSession(session.token, updatedUser, updatedCreator);
+  return { success: true, accountStatus: 'ACTIVE' };
+}
+
+export async function getAccountDeletionStatus(): Promise<AccountDeletionStatus> {
+  const session = getStoredSession();
+  if (!session) {
+    return {
+      accountStatus: 'ACTIVE',
+      isPendingDeletion: false,
+      daysRemaining: 0,
+    };
+  }
+
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<AccountDeletionStatus>('POST', 'getAccountDeletionStatus');
+      if (res.success && res.data) return res.data;
+    } catch (e) {}
+  }
+
+  const isPending = session.user.accountStatus === 'PENDING_DELETION';
+  let daysRemaining = 0;
+  if (isPending && session.user.scheduledDeletionAt) {
+    const diff = new Date(session.user.scheduledDeletionAt).getTime() - new Date().getTime();
+    daysRemaining = Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)));
+  }
+
+  return {
+    accountStatus: session.user.accountStatus || 'ACTIVE',
+    isPendingDeletion: isPending,
+    deletionRequestedAt: session.user.deletionRequestedAt,
+    scheduledDeletionAt: session.user.scheduledDeletionAt,
+    deletionReason: session.user.deletionReason,
+    daysRemaining,
+  };
+}
+
+export async function adminGetDeletionRecords(): Promise<{
+  metrics: { totalPending: number; totalCancelled: number; totalCompleted: number };
+  pendingDeletions: AdminDeletionRecord[];
+  cancelledDeletions: AdminDeletionRecord[];
+  completedDeletions: AdminDeletionRecord[];
+}> {
+  if (isLiveBackendConfigured()) {
+    try {
+      const res = await callAppsScript<any>('POST', 'adminGetDeletionRecords');
+      if (res.success && res.data) return res.data;
+    } catch (e) {}
+  }
+
+  const users = getLocalDemoState<User[]>(STORAGE_KEYS.DEMO_USERS, MOCK_USERS);
+  const creators = getLocalDemoState<Creator[]>(STORAGE_KEYS.DEMO_CREATORS, MOCK_CREATORS);
+  const creatorMap = new Map(creators.map((c) => [c.userId, c]));
+
+  const pending: AdminDeletionRecord[] = [];
+  const cancelled: AdminDeletionRecord[] = [];
+  const completed: AdminDeletionRecord[] = [];
+  const now = Date.now();
+
+  users.forEach((u) => {
+    const c = creatorMap.get(u.userId);
+    const item: AdminDeletionRecord = {
+      userId: u.userId,
+      email: u.email,
+      fullName: u.fullName,
+      accountType: u.accountType,
+      displayName: c ? c.displayName : u.fullName,
+      accountStatus: u.accountStatus || 'ACTIVE',
+      deletionRequestedAt: u.deletionRequestedAt,
+      scheduledDeletionAt: u.scheduledDeletionAt,
+      deletionCancelledAt: u.deletionCancelledAt,
+      deletionCompletedAt: u.deletionCompletedAt,
+      deletionReason: u.deletionReason,
+      daysRemaining: 0,
+    };
+
+    if (u.accountStatus === 'PENDING_DELETION') {
+      if (u.scheduledDeletionAt) {
+        const diff = new Date(u.scheduledDeletionAt).getTime() - now;
+        item.daysRemaining = Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)));
+      }
+      pending.push(item);
+    } else if (u.deletionCancelledAt && u.accountStatus === 'ACTIVE') {
+      cancelled.push(item);
+    } else if (u.accountStatus === 'DELETED') {
+      completed.push(item);
+    }
+  });
+
+  return {
+    metrics: {
+      totalPending: pending.length,
+      totalCancelled: cancelled.length,
+      totalCompleted: completed.length,
+    },
+    pendingDeletions: pending,
+    cancelledDeletions: cancelled,
+    completedDeletions: completed,
+  };
+}
+
 

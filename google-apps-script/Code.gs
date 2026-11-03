@@ -107,7 +107,9 @@ function formatBdt(amount) {
 var SHEET_SCHEMAS = {
   Users: [
     'userId', 'fullName', 'email', 'phone', 'passwordHash', 'passwordSalt',
-    'accountType', 'status', 'profileImage', 'createdAt', 'updatedAt', 'lastLoginAt'
+    'accountType', 'status', 'profileImage', 'createdAt', 'updatedAt', 'lastLoginAt',
+    'accountStatus', 'deletionRequestedAt', 'scheduledDeletionAt', 'deletionCancelledAt',
+    'deletionCompletedAt', 'deletionReason'
   ],
   Creators: [
     'creatorId', 'userId', 'displayName', 'username', 'roles',
@@ -116,23 +118,27 @@ var SHEET_SCHEMAS = {
     'equipment', 'startingPrice', 'facebook', 'instagram', 'youtube',
     'tiktok', 'linkedin', 'website', 'verified', 'featured',
     'rating', 'reviewCount', 'driveRootFolderId', 'driveRootFolderUrl',
+    'calendarConnected', 'calendarEmail', 'calendarId', 'calendarConnectedAt',
+    'calendarLastSyncAt', 'calendarSyncStatus',
+    'accountStatus', 'deletionRequestedAt', 'scheduledDeletionAt', 'deletionCancelledAt',
+    'deletionCompletedAt', 'deletionReason',
     'onboardingCompleted', 'createdAt', 'updatedAt'
   ],
   Portfolios: [
     'portfolioId', 'creatorId', 'title', 'description', 'category',
     'fileId', 'fileUrl', 'thumbnailUrl', 'mimeType', 'tags',
-    'featured', 'status', 'sortOrder', 'createdAt', 'updatedAt'
+    'featured', 'status', 'isArchived', 'sortOrder', 'createdAt', 'updatedAt'
   ],
   Services: [
     'serviceId', 'creatorId', 'title', 'description', 'category',
-    'startingPrice', 'deliveryTime', 'location', 'status',
-    'createdAt', 'updatedAt'
+    'startingPrice', 'deliveryTime', 'location', 'deliverables', 'status',
+    'isArchived', 'createdAt', 'updatedAt'
   ],
   Packages: [
     'packageId', 'creatorId', 'serviceId', 'name', 'description',
     'price', 'duration', 'teamSize', 'photoCount', 'editedPhotoCount',
     'videoDuration', 'deliveryTime', 'revisions', 'travelIncluded',
-    'equipment', 'addons', 'status', 'createdAt', 'updatedAt'
+    'equipment', 'addons', 'status', 'isArchived', 'createdAt', 'updatedAt'
   ],
   Availability: [
     'availabilityId', 'creatorId', 'date', 'startTime', 'endTime',
@@ -142,7 +148,10 @@ var SHEET_SCHEMAS = {
     'bookingId', 'customerId', 'creatorId', 'serviceId', 'packageId',
     'projectTitle', 'projectType', 'eventDate', 'startTime', 'endTime',
     'location', 'budget', 'message', 'status', 'paymentStatus',
-    'calendarEventId', 'driveProjectFolderId', 'createdAt', 'updatedAt'
+    'calendarEventId', 'calendarSyncStatus', 'calendarSyncError', 'calendarSyncedAt',
+    'isArchived', 'archivedAt', 'isCancelled', 'cancelledAt', 'cancellationReason',
+    'isDeleted', 'deletedAt',
+    'driveProjectFolderId', 'createdAt', 'updatedAt'
   ],
   Projects: [
     'projectId', 'bookingId', 'customerId', 'creatorId', 'title',
@@ -152,7 +161,7 @@ var SHEET_SCHEMAS = {
   Messages: [
     'messageId', 'conversationId', 'senderId', 'receiverId', 'bookingId',
     'projectId', 'message', 'attachmentFileId', 'attachmentUrl',
-    'isRead', 'createdAt'
+    'isRead', 'isArchived', 'isDeleted', 'deletedAt', 'createdAt'
   ],
   Reviews: [
     'reviewId', 'bookingId', 'customerId', 'creatorId', 'overallRating',
@@ -727,6 +736,31 @@ function login(email, password) {
     throw new Error('ACCOUNT_SUSPENDED: Your account has been suspended. Please contact support.');
   }
 
+  // Check 30-day account deletion state
+  var deletionCancelledNotice = false;
+  if (user.accountStatus === 'PENDING_DELETION') {
+    var nowTime = new Date().getTime();
+    var scheduledTime = user.scheduledDeletionAt ? new Date(user.scheduledDeletionAt).getTime() : 0;
+    if (scheduledTime && nowTime >= scheduledTime) {
+      throw new Error('ACCOUNT_DELETED: This account was scheduled for deletion and the 30-day grace period has expired.');
+    } else {
+      // User logged in within 30-day window: automatically cancel deletion and restore account
+      user.accountStatus = 'ACTIVE';
+      user.deletionCancelledAt = getNowIso();
+      deletionCancelledNotice = true;
+      if (user.accountType === 'creator') {
+        var existingCreator = findRowByField('Creators', 'userId', user.userId);
+        if (existingCreator) {
+          updateRowByField('Creators', 'creatorId', existingCreator.creatorId, {
+            accountStatus: 'ACTIVE',
+            deletionCancelledAt: user.deletionCancelledAt,
+            availabilityStatus: 'Available'
+          });
+        }
+      }
+    }
+  }
+
   var isValid = verifyPassword(password, user.passwordHash, user.passwordSalt);
   if (!isValid) {
     throw new Error('INVALID_CREDENTIALS: Incorrect email or password');
@@ -734,6 +768,12 @@ function login(email, password) {
 
   // Seamlessly upgrade legacy single-pass hash to modern iterative hash
   var updateData = { lastLoginAt: getNowIso() };
+  if (user.accountStatus === 'ACTIVE') {
+    updateData.accountStatus = 'ACTIVE';
+    if (user.deletionCancelledAt) {
+      updateData.deletionCancelledAt = user.deletionCancelledAt;
+    }
+  }
   if (user.passwordHash && user.passwordHash.indexOf('v2:') !== 0) {
     var newSalt = generateSalt();
     var newHash = hashPasswordWithSalt(password, newSalt);
@@ -752,7 +792,8 @@ function login(email, password) {
   return {
     sessionToken: token,
     user: sanitizeUser(user),
-    creatorProfile: sanitizePublicCreator(creatorProfile)
+    creatorProfile: sanitizePublicCreator(creatorProfile),
+    deletionCancelledNotice: deletionCancelledNotice
   };
 }
 
@@ -917,6 +958,234 @@ function registerCreator(data) {
     sessionToken: regResult.token,
     user: sanitizeUser(regResult.user),
     creatorProfile: sanitizePublicCreator(regResult.creator)
+  };
+}
+
+/* ============================================================================
+ * 8B. ACCOUNT DELETION & 30-DAY GRACE LIFECYCLE
+ * ============================================================================
+ */
+
+function requestAccountDeletion(data, sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var user = findRowByField('Users', 'userId', sessionUser.userId);
+  if (!user) throw new Error('NOT_FOUND: User not found');
+
+  // Verify credentials if provided or confirmed
+  if (data && data.password) {
+    var valid = verifyPassword(data.password, user.passwordHash, user.passwordSalt);
+    if (!valid) throw new Error('INVALID_PASSWORD: Password is incorrect');
+  } else if (!data || (!data.isGoogleReauthConfirmed && !data.confirmed)) {
+    throw new Error('VERIFICATION_REQUIRED: Password or confirmation required to delete account');
+  }
+
+  var now = new Date();
+  var scheduled = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30-day grace period
+  var nowIso = now.toISOString();
+  var scheduledIso = scheduled.toISOString();
+  var reason = (data && data.reason) ? String(data.reason).trim() : '';
+
+  withScriptLock(function() {
+    updateRowByFieldUnlocked('Users', 'userId', sessionUser.userId, {
+      accountStatus: 'PENDING_DELETION',
+      deletionRequestedAt: nowIso,
+      scheduledDeletionAt: scheduledIso,
+      deletionCancelledAt: '',
+      deletionReason: reason,
+      updatedAt: nowIso
+    });
+
+    if (user.accountType === 'creator') {
+      var creator = findRowByField('Creators', 'userId', sessionUser.userId);
+      if (creator) {
+        updateRowByFieldUnlocked('Creators', 'creatorId', creator.creatorId, {
+          accountStatus: 'PENDING_DELETION',
+          deletionRequestedAt: nowIso,
+          scheduledDeletionAt: scheduledIso,
+          deletionCancelledAt: '',
+          deletionReason: reason,
+          availabilityStatus: 'Unavailable',
+          updatedAt: nowIso
+        });
+      }
+    }
+  });
+
+  return {
+    success: true,
+    accountStatus: 'PENDING_DELETION',
+    deletionRequestedAt: nowIso,
+    scheduledDeletionAt: scheduledIso,
+    daysRemaining: 30
+  };
+}
+
+function cancelAccountDeletion(sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var user = findRowByField('Users', 'userId', sessionUser.userId);
+  if (!user) throw new Error('NOT_FOUND');
+
+  var nowIso = getNowIso();
+  withScriptLock(function() {
+    updateRowByFieldUnlocked('Users', 'userId', sessionUser.userId, {
+      accountStatus: 'ACTIVE',
+      deletionCancelledAt: nowIso,
+      updatedAt: nowIso
+    });
+
+    if (user.accountType === 'creator') {
+      var creator = findRowByField('Creators', 'userId', sessionUser.userId);
+      if (creator) {
+        updateRowByFieldUnlocked('Creators', 'creatorId', creator.creatorId, {
+          accountStatus: 'ACTIVE',
+          deletionCancelledAt: nowIso,
+          availabilityStatus: 'Available',
+          updatedAt: nowIso
+        });
+      }
+    }
+  });
+
+  return {
+    success: true,
+    accountStatus: 'ACTIVE',
+    restored: true,
+    message: 'Account deletion cancelled successfully. Your account is active.'
+  };
+}
+
+function getAccountDeletionStatus(sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var user = findRowByField('Users', 'userId', sessionUser.userId);
+  if (!user) throw new Error('NOT_FOUND');
+
+  var isPending = user.accountStatus === 'PENDING_DELETION';
+  var daysRemaining = 0;
+  if (isPending && user.scheduledDeletionAt) {
+    var diff = new Date(user.scheduledDeletionAt).getTime() - new Date().getTime();
+    daysRemaining = Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)));
+  }
+
+  return {
+    accountStatus: user.accountStatus || 'ACTIVE',
+    isPendingDeletion: isPending,
+    deletionRequestedAt: user.deletionRequestedAt || '',
+    scheduledDeletionAt: user.scheduledDeletionAt || '',
+    deletionReason: user.deletionReason || '',
+    daysRemaining: daysRemaining
+  };
+}
+
+function processScheduledDeletions() {
+  var users = sheetToObjects('Users');
+  var now = new Date().getTime();
+  var processed = [];
+
+  for (var i = 0; i < users.length; i++) {
+    var u = users[i];
+    if (u.accountStatus === 'PENDING_DELETION' && u.scheduledDeletionAt) {
+      var scheduledTime = new Date(u.scheduledDeletionAt).getTime();
+      if (now >= scheduledTime) {
+        var completedIso = getNowIso();
+        withScriptLock(function() {
+          updateRowByFieldUnlocked('Users', 'userId', u.userId, {
+            accountStatus: 'DELETED',
+            status: 'deleted',
+            deletionCompletedAt: completedIso,
+            updatedAt: completedIso
+          });
+          if (u.accountType === 'creator') {
+            var c = findRowByField('Creators', 'userId', u.userId);
+            if (c) {
+              updateRowByFieldUnlocked('Creators', 'creatorId', c.creatorId, {
+                accountStatus: 'DELETED',
+                availabilityStatus: 'Unavailable',
+                deletionCompletedAt: completedIso,
+                updatedAt: completedIso
+              });
+            }
+          }
+        });
+        processed.push(u.userId);
+      }
+    }
+  }
+
+  return { processedCount: processed.length, processedUserIds: processed };
+}
+
+function createDailyDeletionTrigger() {
+  var existingTriggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < existingTriggers.length; i++) {
+    if (existingTriggers[i].getHandlerFunction() === 'processScheduledDeletions') {
+      return { status: 'already_exists' };
+    }
+  }
+  ScriptApp.newTrigger('processScheduledDeletions')
+    .timeBased()
+    .everyDays(1)
+    .atHour(2)
+    .create();
+  return { status: 'created' };
+}
+
+function adminGetDeletionRecords(sessionUser) {
+  if (!sessionUser || !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED: Admin access required');
+  }
+
+  var users = sheetToObjects('Users');
+  var creators = sheetToObjects('Creators');
+  var creatorMap = {};
+  for (var i = 0; i < creators.length; i++) {
+    creatorMap[creators[i].userId] = creators[i];
+  }
+
+  var pending = [];
+  var cancelled = [];
+  var completed = [];
+
+  var now = new Date().getTime();
+  for (var j = 0; j < users.length; j++) {
+    var u = users[j];
+    var c = creatorMap[u.userId];
+    var item = {
+      userId: u.userId,
+      email: u.email,
+      fullName: u.fullName,
+      accountType: u.accountType,
+      displayName: c ? c.displayName : u.fullName,
+      accountStatus: u.accountStatus || 'ACTIVE',
+      deletionRequestedAt: u.deletionRequestedAt || '',
+      scheduledDeletionAt: u.scheduledDeletionAt || '',
+      deletionCancelledAt: u.deletionCancelledAt || '',
+      deletionCompletedAt: u.deletionCompletedAt || '',
+      deletionReason: u.deletionReason || '',
+      daysRemaining: 0
+    };
+
+    if (u.accountStatus === 'PENDING_DELETION') {
+      if (u.scheduledDeletionAt) {
+        var diff = new Date(u.scheduledDeletionAt).getTime() - now;
+        item.daysRemaining = Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)));
+      }
+      pending.push(item);
+    } else if (u.deletionCancelledAt && u.accountStatus === 'ACTIVE') {
+      cancelled.push(item);
+    } else if (u.accountStatus === 'DELETED') {
+      completed.push(item);
+    }
+  }
+
+  return {
+    metrics: {
+      totalPending: pending.length,
+      totalCancelled: cancelled.length,
+      totalCompleted: completed.length
+    },
+    pendingDeletions: pending,
+    cancelledDeletions: cancelled,
+    completedDeletions: completed
   };
 }
 
@@ -1180,7 +1449,7 @@ function uploadBase64File(data, sessionUser) {
 }
 
 /* ============================================================================
- * 10. GOOGLE CALENDAR SYNCHRONIZATION
+ * 10. INDIVIDUAL GOOGLE CALENDAR SYNCHRONIZATION (PER-FREELANCER)
  * ============================================================================
  */
 
@@ -1192,7 +1461,35 @@ function getTargetCalendar() {
       if (cal) return cal;
     } catch (e) {}
   }
-  return CalendarApp.getDefaultCalendar();
+  try {
+    return CalendarApp.getDefaultCalendar();
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Resolves the individual Google Calendar for a specific freelancer.
+ * Priority:
+ * 1. Freelancer's connected Google Calendar ID / Email (per-creator personal calendar)
+ * 2. Fallback to platform-configured calendar if permitted
+ */
+function getCreatorTargetCalendar(creator) {
+  if (!creator) return getTargetCalendar();
+
+  // If creator has connected their personal calendar
+  if (creator.calendarConnected && (creator.calendarId || creator.calendarEmail)) {
+    var calId = creator.calendarId || creator.calendarEmail;
+    try {
+      var personalCal = CalendarApp.getCalendarById(calId);
+      if (personalCal) return personalCal;
+    } catch (err) {
+      Logger.log('Could not access individual calendar ' + calId + ': ' + err.toString());
+    }
+  }
+
+  // Fallback to default calendar
+  return getTargetCalendar();
 }
 
 function parseDateTime(dateStr, timeStr) {
@@ -1203,10 +1500,28 @@ function parseDateTime(dateStr, timeStr) {
   return new Date(parseInt(dp[0], 10), parseInt(dp[1], 10) - 1, parseInt(dp[2], 10), hours, mins, 0);
 }
 
+/**
+ * Creates or updates an event on the connected freelancer's Google Calendar.
+ * Duplicate prevention: If booking already has a valid calendarEventId, updates existing event.
+ */
 function createBookingCalendarEvent(booking, creator, customer) {
+  // DUPLICATE PREVENTION: If event already exists, update instead of creating another
+  if (booking.calendarEventId && booking.calendarEventId.indexOf('CAL-') !== 0) {
+    var updated = updateBookingCalendarEvent(booking.calendarEventId, booking, creator);
+    if (updated) {
+      return { eventId: booking.calendarEventId, status: 'synced', email: creator.calendarEmail || '' };
+    }
+  }
+
   try {
-    var cal = getTargetCalendar();
-    if (!cal) return 'CAL-SIM-' + booking.bookingId;
+    var cal = getCreatorTargetCalendar(creator);
+    if (!cal) {
+      return {
+        eventId: 'CAL-LOCAL-' + booking.bookingId,
+        status: creator.calendarConnected ? 'failed' : 'not_connected',
+        error: creator.calendarConnected ? 'Calendar ID not accessible' : 'Personal calendar not connected'
+      };
+    }
 
     var start = parseDateTime(booking.eventDate, booking.startTime);
     var end = parseDateTime(booking.eventDate, booking.endTime || '18:00');
@@ -1214,15 +1529,24 @@ function createBookingCalendarEvent(booking, creator, customer) {
       end = new Date(start.getTime() + (4 * 60 * 60 * 1000));
     }
 
-    var title = '📸 [CreatorFlow] ' + booking.projectTitle + ' (' + (creator.displayName || 'Creator') + ')';
+    var title = 'CreatorFlow — ' + (booking.projectTitle || 'Creative Production') + ' (' + (creator.displayName || 'Creator') + ')';
     var desc = [
-      'CONFIRMED PRODUCTION BOOKING',
-      'Booking ID: ' + booking.bookingId,
+      '========================================',
+      'CREATORFLOW CONFIRMED PRODUCTION BOOKING',
+      '========================================',
       'Project: ' + booking.projectTitle,
-      'Creator: ' + (creator.displayName || '') + ' (@' + (creator.username || '') + ')',
-      'Client: ' + (customer.fullName || '') + ' (' + (customer.email || '') + ')',
+      'Client: ' + (customer.fullName || 'Client') + ' (' + (customer.email || '') + ')',
+      'Booking Reference: #' + booking.bookingId,
+      'Date: ' + booking.eventDate,
+      'Scheduled Time: ' + (booking.startTime || '10:00') + ' to ' + (booking.endTime || '18:00'),
       'Location: ' + (booking.location || 'On-Location'),
-      'Budget: ৳' + formatBdt(booking.budget || 0)
+      'Project Type: ' + (booking.projectType || 'Photography / Cinematography'),
+      'Agreed Budget: ৳' + formatBdt(booking.budget || 0),
+      'Client Notes: ' + (booking.message || 'None'),
+      'Creator: ' + (creator.displayName || '') + ' (@' + (creator.username || '') + ')',
+      'Calendar Sync Status: Confirmed & Synchronized',
+      'Synchronized At: ' + getNowIso(),
+      '========================================'
     ].join('\n');
 
     var ev = cal.createEvent(title, start, end, {
@@ -1230,17 +1554,27 @@ function createBookingCalendarEvent(booking, creator, customer) {
       location: booking.location || 'On-Location'
     });
 
-    return ev.getId();
+    return {
+      eventId: ev.getId(),
+      status: 'synced',
+      email: creator.calendarEmail || cal.getName()
+    };
   } catch (e) {
-    Logger.log('Calendar event notice: ' + e.toString());
-    return 'CAL-AUTO-' + booking.bookingId;
+    Logger.log('Calendar event creation notice: ' + e.toString());
+    return {
+      eventId: 'CAL-AUTO-' + booking.bookingId,
+      status: 'failed',
+      error: e.toString()
+    };
   }
 }
 
 function updateBookingCalendarEvent(calendarEventId, booking, creator) {
   if (!calendarEventId || calendarEventId.indexOf('CAL-') === 0) return false;
   try {
-    var cal = getTargetCalendar();
+    var cal = getCreatorTargetCalendar(creator);
+    if (!cal) return false;
+
     var ev = cal.getEventById(calendarEventId);
     if (!ev) return false;
 
@@ -1252,23 +1586,155 @@ function updateBookingCalendarEvent(calendarEventId, booking, creator) {
 
     ev.setTime(start, end);
     ev.setLocation(booking.location || 'On-Location');
-    ev.setTitle('📸 [CreatorFlow] ' + booking.projectTitle + ' (' + (creator.displayName || '') + ')');
+    ev.setTitle('CreatorFlow — ' + (booking.projectTitle || 'Creative Production') + ' (' + (creator.displayName || '') + ')');
     return true;
   } catch (e) {
+    Logger.log('Calendar event update notice: ' + e.toString());
     return false;
   }
 }
 
-function cancelBookingCalendarEvent(calendarEventId) {
+function cancelBookingCalendarEvent(calendarEventId, booking, creator) {
   if (!calendarEventId || calendarEventId.indexOf('CAL-') === 0) return true;
   try {
-    var cal = getTargetCalendar();
+    var cal = getCreatorTargetCalendar(creator);
+    if (!cal) return true;
+
     var ev = cal.getEventById(calendarEventId);
-    if (ev) ev.deleteEvent();
+    if (ev) {
+      ev.setTitle('🚫 [CANCELLED] CreatorFlow — ' + (booking.projectTitle || 'Production'));
+    }
     return true;
   } catch (e) {
+    Logger.log('Calendar cancel notice: ' + e.toString());
     return false;
   }
+}
+
+function connectGoogleCalendar(creatorId, calendarData, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED: Can only connect your own Google Calendar');
+  }
+
+  var calEmail = String(calendarData.email || sessionUser.email || '').trim();
+  var calId = String(calendarData.calendarId || calEmail).trim();
+  var now = getNowIso();
+
+  var updateData = {
+    calendarConnected: true,
+    calendarEmail: calEmail,
+    calendarId: calId,
+    calendarConnectedAt: now,
+    calendarLastSyncAt: now,
+    calendarSyncStatus: 'connected',
+    updatedAt: now
+  };
+
+  updateRowByField('Creators', 'creatorId', creatorId, updateData);
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
+function disconnectGoogleCalendar(creatorId, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var now = getNowIso();
+  var updateData = {
+    calendarConnected: false,
+    calendarEmail: '',
+    calendarId: '',
+    calendarSyncStatus: 'disconnected',
+    updatedAt: now
+  };
+
+  updateRowByField('Creators', 'creatorId', creatorId, updateData);
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
+function syncGoogleCalendarNow(creatorId, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var confirmedBookings = sheetToObjects('Bookings').filter(function(b) {
+    return b.creatorId === creatorId && b.status === 'confirmed' && !b.isArchived;
+  });
+
+  var syncedCount = 0;
+  for (var i = 0; i < confirmedBookings.length; i++) {
+    var b = confirmedBookings[i];
+    var customer = findRowByField('Users', 'userId', b.customerId) || {};
+    var res = createBookingCalendarEvent(b, creator, customer);
+    if (res.status === 'synced') {
+      syncedCount++;
+      updateRowByField('Bookings', 'bookingId', b.bookingId, {
+        calendarEventId: res.eventId,
+        calendarSyncStatus: 'synced',
+        calendarSyncedAt: getNowIso(),
+        calendarSyncError: ''
+      });
+    }
+  }
+
+  var now = getNowIso();
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    calendarLastSyncAt: now,
+    calendarSyncStatus: 'connected',
+    updatedAt: now
+  });
+
+  return {
+    success: true,
+    syncedCount: syncedCount,
+    totalConfirmed: confirmedBookings.length,
+    lastSyncAt: now
+  };
+}
+
+function retryCalendarSync(bookingId, sessionUser) {
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND: Booking not found');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var customer = findRowByField('Users', 'userId', booking.customerId) || {};
+  var res = createBookingCalendarEvent(booking, creator, customer);
+
+  if (res.status === 'synced') {
+    updateRowByField('Bookings', 'bookingId', bookingId, {
+      calendarEventId: res.eventId,
+      calendarSyncStatus: 'synced',
+      calendarSyncedAt: getNowIso(),
+      calendarSyncError: ''
+    });
+    updateRowByField('Creators', 'creatorId', creator.creatorId, {
+      calendarLastSyncAt: getNowIso()
+    });
+  } else {
+    updateRowByField('Bookings', 'bookingId', bookingId, {
+      calendarSyncStatus: 'failed',
+      calendarSyncError: res.error || 'Failed to sync calendar'
+    });
+  }
+
+  return stripInternalRow(findRowByField('Bookings', 'bookingId', bookingId));
 }
 
 /* ============================================================================
@@ -1282,6 +1748,9 @@ function getCreators(filters) {
 
   for (var i = 0; i < rows.length; i++) {
     var c = rows[i];
+    if (c.accountStatus === 'PENDING_DELETION' || c.accountStatus === 'DELETED') {
+      continue;
+    }
     if (filters && filters.role && filters.role !== 'all') {
       var roles = Array.isArray(c.roles) ? c.roles : [c.roles];
       var match = roles.some(function(r) {
@@ -1323,6 +1792,7 @@ function getCreatorByUsername(username) {
   var clean = String(username).trim().toLowerCase();
   var creator = findRowByField('Creators', 'username', clean);
   if (!creator) return null;
+  if (creator.accountStatus === 'DELETED') return null;
 
   var portfolios = sheetToObjects('Portfolios').filter(function(p) {
     return p.creatorId === creator.creatorId && p.status === 'active';
@@ -1361,9 +1831,10 @@ function updateCreatorProfile(creatorId, updateData, sessionUser) {
 
   var allowed = [
     'displayName', 'roles', 'bio', 'profileImageUrl', 'coverImageUrl',
-    'city', 'district', 'country', 'serviceAreas', 'skills', 'languages',
+    'city', 'district', 'division', 'country', 'serviceAreas', 'skills', 'languages',
     'experienceYears', 'equipment', 'startingPrice', 'facebook',
-    'instagram', 'youtube', 'tiktok', 'linkedin', 'website'
+    'instagram', 'youtube', 'tiktok', 'linkedin', 'website',
+    'accountStatus', 'availabilityStatus'
   ];
 
   var clean = {};
@@ -1754,6 +2225,7 @@ function getBookings(sessionUser) {
   var creatorRecord = isCreator ? findRowByField('Creators', 'userId', sessionUser.userId) : null;
 
   var list = all.filter(function(b) {
+    if (b.isDeleted === true || b.isDeleted === 'true' || b.status === 'deleted') return false;
     if (isAdmin) return true;
     if (b.customerId === sessionUser.userId) return true;
     if (creatorRecord && b.creatorId === creatorRecord.creatorId) return true;
@@ -1996,14 +2468,32 @@ function confirmBooking(bookingId, sessionUser) {
 
   // Phase 2: External Calendar & Notification operations OUTSIDE the lock
   var currentBooking = findRowByField('Bookings', 'bookingId', bookingId);
-  var calendarEventId = currentBooking.calendarEventId;
-  if (!calendarEventId || calendarEventId.indexOf('CAL-') === 0) {
-    calendarEventId = createBookingCalendarEvent(currentBooking, creator, customer || {});
-    if (calendarEventId) {
-      updateRowByField('Bookings', 'bookingId', bookingId, {
-        calendarEventId: calendarEventId
+  var syncResult = createBookingCalendarEvent(currentBooking, creator, customer || {});
+
+  if (syncResult && syncResult.status === 'synced') {
+    updateRowByField('Bookings', 'bookingId', bookingId, {
+      calendarEventId: syncResult.eventId,
+      calendarSyncStatus: 'synced',
+      calendarSyncedAt: getNowIso(),
+      calendarSyncError: ''
+    });
+    if (creator.calendarConnected) {
+      updateRowByField('Creators', 'creatorId', creator.creatorId, {
+        calendarLastSyncAt: getNowIso()
       });
     }
+  } else if (syncResult && syncResult.status === 'failed') {
+    updateRowByField('Bookings', 'bookingId', bookingId, {
+      calendarEventId: syncResult.eventId || '',
+      calendarSyncStatus: 'failed',
+      calendarSyncError: syncResult.error || 'Failed to create calendar event'
+    });
+  } else {
+    updateRowByField('Bookings', 'bookingId', bookingId, {
+      calendarEventId: (syncResult && syncResult.eventId) || '',
+      calendarSyncStatus: 'not_connected',
+      calendarSyncError: ''
+    });
   }
 
   createNotification(
@@ -2051,6 +2541,342 @@ function declineBooking(bookingId, reason, sessionUser) {
   );
 
   return stripInternalRow(findRowByField('Bookings', 'bookingId', bookingId));
+}
+
+function rescheduleBooking(bookingId, data, sessionUser) {
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND: Booking not found');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  var isParty = sessionUser.userId === creator.userId || sessionUser.userId === booking.customerId;
+  if (!isParty && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED: Only booking parties can reschedule');
+  }
+
+  var newDate = String(data.eventDate || booking.eventDate).trim();
+  var newStart = String(data.startTime || booking.startTime).trim();
+  var newEnd = String(data.endTime || booking.endTime).trim();
+
+  // Check conflicts on new date
+  var conflict = checkBookingConflict(booking.creatorId, newDate, newStart, newEnd, bookingId);
+  if (conflict) {
+    throw new Error('DATE_UNAVAILABLE: Time slot conflict on ' + newDate);
+  }
+
+  var now = getNowIso();
+  withScriptLock(function() {
+    updateRowByFieldUnlocked('Bookings', 'bookingId', bookingId, {
+      eventDate: newDate,
+      startTime: newStart,
+      endTime: newEnd,
+      updatedAt: now
+    });
+
+    // Update availability row
+    var avlSlots = sheetToObjects('Availability').filter(function(a) { return a.bookingId === bookingId; });
+    if (avlSlots.length > 0) {
+      updateRowByFieldUnlocked('Availability', 'availabilityId', avlSlots[0].availabilityId, {
+        date: newDate,
+        startTime: newStart,
+        endTime: newEnd,
+        updatedAt: now
+      });
+    }
+  });
+
+  var updatedBooking = findRowByField('Bookings', 'bookingId', bookingId);
+
+  // Update existing Google Calendar event if confirmed
+  if (updatedBooking.calendarEventId) {
+    updateBookingCalendarEvent(updatedBooking.calendarEventId, updatedBooking, creator);
+  }
+
+  createNotification(
+    booking.customerId,
+    'Booking Rescheduled',
+    'Booking #' + bookingId + ' has been rescheduled to ' + newDate + ' (' + newStart + ' - ' + newEnd + ')',
+    'calendar'
+  );
+  createNotification(
+    creator.userId,
+    'Booking Rescheduled',
+    'Production booking #' + bookingId + ' date changed to ' + newDate + ' (' + newStart + ' - ' + newEnd + ')',
+    'calendar'
+  );
+
+  return stripInternalRow(updatedBooking);
+}
+
+function cancelBooking(bookingId, reason, sessionUser) {
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND: Booking not found');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  var isParty = sessionUser.userId === creator.userId || sessionUser.userId === booking.customerId;
+  if (!isParty && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var now = getNowIso();
+  withScriptLock(function() {
+    updateRowByFieldUnlocked('Bookings', 'bookingId', bookingId, {
+      status: 'cancelled',
+      isCancelled: true,
+      cancelledAt: now,
+      cancellationReason: String(reason || 'Cancelled by user').trim(),
+      updatedAt: now
+    });
+
+    // Free availability slot
+    var avlSlots = sheetToObjects('Availability').filter(function(a) { return a.bookingId === bookingId; });
+    if (avlSlots.length > 0) {
+      deleteRowByFieldUnlocked('Availability', 'availabilityId', avlSlots[0].availabilityId);
+    }
+  });
+
+  var updatedBooking = findRowByField('Bookings', 'bookingId', bookingId);
+
+  // Cancel calendar event
+  if (updatedBooking.calendarEventId) {
+    cancelBookingCalendarEvent(updatedBooking.calendarEventId, updatedBooking, creator);
+  }
+
+  createNotification(
+    booking.customerId,
+    'Booking Cancelled',
+    'Booking #' + bookingId + ' was cancelled' + (reason ? ': ' + reason : ''),
+    'booking'
+  );
+  createNotification(
+    creator.userId,
+    'Booking Cancelled',
+    'Booking #' + bookingId + ' was cancelled' + (reason ? ': ' + reason : ''),
+    'booking'
+  );
+
+  return stripInternalRow(updatedBooking);
+}
+
+function archiveBooking(bookingId, sessionUser) {
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  var isParty = (creator && sessionUser.userId === creator.userId) || sessionUser.userId === booking.customerId;
+  if (!isParty && !isAdminOrStaff(sessionUser)) throw new Error('UNAUTHORIZED');
+
+  var now = getNowIso();
+  updateRowByField('Bookings', 'bookingId', bookingId, {
+    isArchived: true,
+    archivedAt: now,
+    updatedAt: now
+  });
+
+  return stripInternalRow(findRowByField('Bookings', 'bookingId', bookingId));
+}
+
+function restoreBooking(bookingId, sessionUser) {
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  var isParty = (creator && sessionUser.userId === creator.userId) || sessionUser.userId === booking.customerId;
+  if (!isParty && !isAdminOrStaff(sessionUser)) throw new Error('UNAUTHORIZED');
+
+  updateRowByField('Bookings', 'bookingId', bookingId, {
+    isArchived: false,
+    updatedAt: getNowIso()
+  });
+
+  return stripInternalRow(findRowByField('Bookings', 'bookingId', bookingId));
+}
+
+function deleteBooking(bookingId, sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var booking = findRowByField('Bookings', 'bookingId', bookingId);
+  if (!booking) throw new Error('NOT_FOUND: Booking not found');
+
+  var creator = findRowByField('Creators', 'creatorId', booking.creatorId);
+  var isParty = (creator && sessionUser.userId === creator.userId) || sessionUser.userId === booking.customerId;
+  if (!isParty && !isAdminOrStaff(sessionUser)) throw new Error('UNAUTHORIZED: Not authorized to delete this booking');
+
+  var now = getNowIso();
+  withScriptLock(function() {
+    updateRowByFieldUnlocked('Bookings', 'bookingId', bookingId, {
+      isDeleted: true,
+      deletedAt: now,
+      status: 'deleted',
+      updatedAt: now
+    });
+
+    // Also remove any availability slot
+    var avlSlots = sheetToObjects('Availability').filter(function(a) { return a.bookingId === bookingId; });
+    for (var i = 0; i < avlSlots.length; i++) {
+      deleteRowByFieldUnlocked('Availability', 'availabilityId', avlSlots[i].availabilityId);
+    }
+  });
+
+  // If there was a calendar event, cancel/delete it
+  if (booking.calendarEventId) {
+    try {
+      cancelBookingCalendarEvent(booking.calendarEventId, booking, creator);
+    } catch (e) {
+      Logger.log('Calendar event cleanup on delete booking: ' + e.message);
+    }
+  }
+
+  return { success: true, bookingId: bookingId };
+}
+
+function deleteConversation(conversationId, sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var all = sheetToObjects('Messages');
+  var convMsgs = all.filter(function(m) {
+    return (m.conversationId === conversationId || ('CONV-' + [m.senderId, m.receiverId].sort().join('-')) === conversationId) &&
+      (m.senderId === sessionUser.userId || m.receiverId === sessionUser.userId);
+  });
+
+  var now = getNowIso();
+  for (var i = 0; i < convMsgs.length; i++) {
+    updateRowByField('Messages', 'messageId', convMsgs[i].messageId, {
+      isDeleted: true,
+      deletedAt: now
+    });
+  }
+
+  return { success: true, conversationId: conversationId };
+}
+
+function archiveConversation(conversationId, sessionUser) {
+  if (!sessionUser) throw new Error('UNAUTHORIZED');
+  var all = sheetToObjects('Messages');
+  var convMsgs = all.filter(function(m) {
+    return (m.conversationId === conversationId || ('CONV-' + [m.senderId, m.receiverId].sort().join('-')) === conversationId) &&
+      (m.senderId === sessionUser.userId || m.receiverId === sessionUser.userId);
+  });
+
+  var targetState = true;
+  if (convMsgs.length > 0 && convMsgs[0].isArchived) {
+    targetState = false; // Toggle
+  }
+
+  for (var i = 0; i < convMsgs.length; i++) {
+    updateRowByField('Messages', 'messageId', convMsgs[i].messageId, {
+      isArchived: targetState
+    });
+  }
+
+  return { success: true, conversationId: conversationId, isArchived: targetState };
+}
+
+function deleteMessage(messageId, sessionUser) {
+  var m = findRowByField('Messages', 'messageId', messageId);
+  if (!m) throw new Error('NOT_FOUND');
+
+  if (m.senderId !== sessionUser.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED: Can only delete your own messages');
+  }
+
+  updateRowByField('Messages', 'messageId', messageId, {
+    isDeleted: true,
+    deletedAt: getNowIso()
+  });
+
+  return { success: true, messageId: messageId };
+}
+
+function updateProfilePhoto(creatorId, photoData, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var imageUrl = String(photoData.url || photoData.profileImageUrl || '').trim();
+  var now = getNowIso();
+
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    profileImageUrl: imageUrl,
+    updatedAt: now
+  });
+
+  if (creator.userId) {
+    updateRowByField('Users', 'userId', creator.userId, {
+      profileImage: imageUrl,
+      updatedAt: now
+    });
+  }
+
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
+function removeProfilePhoto(creatorId, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var now = getNowIso();
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    profileImageUrl: '',
+    updatedAt: now
+  });
+
+  if (creator.userId) {
+    updateRowByField('Users', 'userId', creator.userId, {
+      profileImage: '',
+      updatedAt: now
+    });
+  }
+
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
+function updateCoverPhoto(creatorId, photoData, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var imageUrl = String(photoData.url || photoData.coverImageUrl || '').trim();
+  var now = getNowIso();
+
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    coverImageUrl: imageUrl,
+    updatedAt: now
+  });
+
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
+}
+
+function removeCoverPhoto(creatorId, sessionUser) {
+  var creator = findRowByField('Creators', 'creatorId', creatorId);
+  if (!creator) throw new Error('NOT_FOUND: Creator not found');
+
+  if (sessionUser.userId !== creator.userId && !isAdminOrStaff(sessionUser)) {
+    throw new Error('UNAUTHORIZED');
+  }
+
+  var now = getNowIso();
+  updateRowByField('Creators', 'creatorId', creatorId, {
+    coverImageUrl: '',
+    updatedAt: now
+  });
+
+  var updated = findRowByField('Creators', 'creatorId', creatorId);
+  return sanitizePublicCreator(updated);
 }
 
 function getProjects(sessionUser) {
@@ -2952,6 +3778,11 @@ function doGet(e) {
     }
 
     // Admin / Staff GET actions
+    if (action === 'getAccountDeletionStatus') {
+      if (!sessionUser) return createErrorResponse('UNAUTHORIZED', 'Session required');
+      return createSuccessResponse(getAccountDeletionStatus(sessionUser));
+    }
+    if (action === 'adminGetDeletionRecords') return createSuccessResponse(adminGetDeletionRecords(sessionUser));
     if (action === 'adminGetDashboard') return createSuccessResponse(adminGetDashboard(sessionUser));
     if (action === 'adminGetCreators') return createSuccessResponse(adminGetCreators(sessionUser));
     if (action === 'adminGetCreator') return createSuccessResponse(adminGetCreator(params.creatorId, sessionUser));
@@ -3065,15 +3896,43 @@ function doPost(e) {
     if (action === 'acceptBooking') return createSuccessResponse(acceptBooking(data.bookingId, sessionUser));
     if (action === 'confirmBooking') return createSuccessResponse(confirmBooking(data.bookingId, sessionUser));
     if (action === 'declineBooking') return createSuccessResponse(declineBooking(data.bookingId, data.reason, sessionUser));
+    if (action === 'rescheduleBooking') return createSuccessResponse(rescheduleBooking(data.bookingId, data, sessionUser));
+    if (action === 'cancelBooking') return createSuccessResponse(cancelBooking(data.bookingId, data.reason, sessionUser));
+    if (action === 'archiveBooking') return createSuccessResponse(archiveBooking(data.bookingId, sessionUser));
+    if (action === 'restoreBooking') return createSuccessResponse(restoreBooking(data.bookingId, sessionUser));
+    if (action === 'deleteBooking') return createSuccessResponse(deleteBooking(data.bookingId, sessionUser));
+
+    // Calendar Synchronization (Per-Freelancer)
+    if (action === 'connectGoogleCalendar') return createSuccessResponse(connectGoogleCalendar(data.creatorId, data, sessionUser));
+    if (action === 'disconnectGoogleCalendar') return createSuccessResponse(disconnectGoogleCalendar(data.creatorId, sessionUser));
+    if (action === 'syncGoogleCalendarNow') return createSuccessResponse(syncGoogleCalendarNow(data.creatorId, sessionUser));
+    if (action === 'retryCalendarSync') return createSuccessResponse(retryCalendarSync(data.bookingId, sessionUser));
+
+    // Account Lifecycle & 30-Day Deletion
+    if (action === 'requestAccountDeletion') return createSuccessResponse(requestAccountDeletion(data, sessionUser));
+    if (action === 'cancelAccountDeletion') return createSuccessResponse(cancelAccountDeletion(sessionUser));
+    if (action === 'getAccountDeletionStatus') return createSuccessResponse(getAccountDeletionStatus(sessionUser));
+    if (action === 'processScheduledDeletions') return createSuccessResponse(processScheduledDeletions());
+    if (action === 'createDailyDeletionTrigger') return createSuccessResponse(createDailyDeletionTrigger());
+    if (action === 'adminGetDeletionRecords') return createSuccessResponse(adminGetDeletionRecords(sessionUser));
+
+    // Photo Management (Facebook-style)
+    if (action === 'updateProfilePhoto') return createSuccessResponse(updateProfilePhoto(data.creatorId, data, sessionUser));
+    if (action === 'removeProfilePhoto') return createSuccessResponse(removeProfilePhoto(data.creatorId, sessionUser));
+    if (action === 'updateCoverPhoto') return createSuccessResponse(updateCoverPhoto(data.creatorId, data, sessionUser));
+    if (action === 'removeCoverPhoto') return createSuccessResponse(removeCoverPhoto(data.creatorId, sessionUser));
 
     // Projects
     if (action === 'updateProjectStatus') {
       return createSuccessResponse(updateProjectStatus(data.projectId, data.status, data.notes, data.deliveryDate, sessionUser));
     }
 
-    // Messaging
+    // Messaging & Conversations
     if (action === 'sendMessage') return createSuccessResponse(sendMessage(data, sessionUser));
     if (action === 'markMessageRead') return createSuccessResponse(markMessageRead(data.messageId, sessionUser));
+    if (action === 'deleteConversation') return createSuccessResponse(deleteConversation(data.conversationId, sessionUser));
+    if (action === 'archiveConversation') return createSuccessResponse(archiveConversation(data.conversationId, sessionUser));
+    if (action === 'deleteMessage') return createSuccessResponse(deleteMessage(data.messageId, sessionUser));
 
     // Reviews
     if (action === 'submitReview') return createSuccessResponse(submitReview(data, sessionUser));

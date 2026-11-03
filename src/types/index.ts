@@ -17,6 +17,12 @@ export interface User {
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+  accountStatus?: 'ACTIVE' | 'PENDING_DELETION' | 'DELETED' | 'SUSPENDED';
+  deletionRequestedAt?: string;
+  scheduledDeletionAt?: string;
+  deletionCancelledAt?: string;
+  deletionCompletedAt?: string;
+  deletionReason?: string;
 }
 
 export interface Creator {
@@ -30,6 +36,7 @@ export interface Creator {
   coverImageUrl: string;
   city: string;
   district: string;
+  division?: string;
   country: string;
   serviceAreas: string[];
   skills: string[];
@@ -50,6 +57,18 @@ export interface Creator {
   availabilityStatus?: 'Available' | 'Limited' | 'Busy' | 'Unavailable';
   driveRootFolderId?: string;
   driveRootFolderUrl?: string;
+  calendarConnected?: boolean;
+  calendarEmail?: string;
+  calendarId?: string;
+  calendarConnectedAt?: string;
+  calendarLastSyncAt?: string;
+  calendarSyncStatus?: 'connected' | 'disconnected' | 'error';
+  accountStatus?: 'ACTIVE' | 'PENDING_DELETION' | 'DELETED' | 'SUSPENDED';
+  deletionRequestedAt?: string;
+  scheduledDeletionAt?: string;
+  deletionCancelledAt?: string;
+  deletionCompletedAt?: string;
+  deletionReason?: string;
   onboardingCompleted: boolean;
   createdAt: string;
   updatedAt: string;
@@ -70,6 +89,7 @@ export interface PortfolioItem {
   tags: string[];
   featured: boolean;
   status: 'active' | 'archived';
+  isArchived?: boolean;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -84,7 +104,9 @@ export interface Service {
   startingPrice: number;
   deliveryTime: string;
   location: string;
+  deliverables?: string[];
   status: 'active' | 'inactive';
+  isArchived?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -107,6 +129,7 @@ export interface PackageItem {
   equipment: string[];
   addons: string[];
   status: 'active' | 'inactive';
+  isArchived?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -154,6 +177,16 @@ export interface Booking {
   status: BookingStatus;
   paymentStatus: PaymentStatus;
   calendarEventId?: string;
+  calendarSyncStatus?: 'synced' | 'pending' | 'failed' | 'not_connected';
+  calendarSyncError?: string;
+  calendarSyncedAt?: string;
+  isArchived?: boolean;
+  archivedAt?: string;
+  isCancelled?: boolean;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
   driveProjectFolderId?: string;
   createdAt: string;
   updatedAt: string;
@@ -202,6 +235,9 @@ export interface Message {
   attachmentFileId?: string;
   attachmentUrl?: string;
   isRead: boolean;
+  isArchived?: boolean;
+  isDeleted?: boolean;
+  deletedAt?: string;
   createdAt: string;
   isGuest?: boolean;
   guestName?: string;
@@ -277,4 +313,30 @@ export interface AuthSession {
   token: string;
   user: User;
   creator?: Creator;
+  deletionCancelledNotice?: boolean;
+}
+
+export interface AccountDeletionStatus {
+  isPendingDeletion: boolean;
+  deletionRequestedAt?: string;
+  scheduledDeletionAt?: string;
+  daysRemaining?: number;
+  reason?: string;
+  canCancel: boolean;
+}
+
+export interface AdminDeletionRecord {
+  userId: string;
+  fullName: string;
+  email: string;
+  accountType: AccountType;
+  creatorId?: string;
+  displayName?: string;
+  accountStatus: 'ACTIVE' | 'PENDING_DELETION' | 'DELETED' | 'SUSPENDED';
+  deletionRequestedAt?: string;
+  scheduledDeletionAt?: string;
+  deletionCancelledAt?: string;
+  deletionCompletedAt?: string;
+  deletionReason?: string;
+  daysRemaining?: number;
 }
